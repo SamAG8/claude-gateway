@@ -54,14 +54,19 @@ def verify_api_key(x_api_key: str = Header(...)):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
-async def _stream_subprocess(args: list):
+async def _stream_subprocess(args: list, stdin_data: bytes | None = None):
     """Run claude with given args and stream text output as SSE events."""
     async with semaphore:
         process = await asyncio.create_subprocess_exec(
             *args,
+            stdin=asyncio.subprocess.PIPE if stdin_data is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        if stdin_data is not None:
+            process.stdin.write(stdin_data)
+            await process.stdin.drain()
+            process.stdin.close()
 
         loop = asyncio.get_event_loop()
         start = loop.time()
@@ -209,7 +214,8 @@ async def _analyze_pdf(file_path: Path, instructions: str):
 
     prompt = f"{instructions}\n\nDocument content:\n{text}"
     async for event in _stream_subprocess(
-        ["claude", "-p", prompt, "--output-format", "text", "--tools", "none"]
+        ["claude", "--input-format", "text", "--output-format", "text", "--tools", "none"],
+        stdin_data=prompt.encode(),
     ):
         yield event
 
