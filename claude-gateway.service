@@ -1,0 +1,16 @@
+[Unit]
+Description=Claude Gateway
+After=network.target
+
+[Service]
+Type=simple
+User=gateway
+Group=gateway
+WorkingDirectory=/home/claude-via-ssh
+EnvironmentFile=/home/claude-via-ssh/.env
+ExecStart=/home/claude-via-ssh/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
