@@ -252,13 +252,14 @@ _UI_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Claude Gateway</title>
+<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,sans-serif;background:#f0f0f0;color:#1a1a1a;padding:2rem}
-.wrap{max-width:760px;margin:0 auto}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f0f0f0;color:#1a1a1a;padding:2rem}
+.wrap{max-width:780px;margin:0 auto}
 h1{font-size:1.4rem;font-weight:700;margin-bottom:1.5rem}
 .card{background:#fff;border-radius:10px;padding:1.5rem;margin-bottom:1rem;box-shadow:0 1px 4px rgba(0,0,0,.08)}
-label{display:block;font-size:.8rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#555;margin-bottom:.4rem}
+label{display:block;font-size:.78rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#555;margin-bottom:.4rem}
 input,textarea{width:100%;border:1px solid #ddd;border-radius:6px;padding:.6rem .8rem;font-size:.9rem;font-family:inherit;outline:none;transition:border .15s}
 input:focus,textarea:focus{border-color:#555}
 textarea{resize:vertical;min-height:90px}
@@ -271,15 +272,49 @@ textarea{resize:vertical;min-height:90px}
 button[type=submit]{background:#1a1a1a;color:#fff;border:none;border-radius:6px;padding:.65rem 1.4rem;font-size:.9rem;font-weight:500;cursor:pointer;margin-top:.5rem;transition:background .15s}
 button[type=submit]:hover{background:#333}
 button[type=submit]:disabled{background:#aaa;cursor:not-allowed}
-.resp-header{display:flex;align-items:center;gap:.6rem;margin-bottom:.7rem}
+/* Response card */
+.resp-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:.85rem}
 .badge{font-size:.72rem;font-weight:600;padding:.2rem .55rem;border-radius:4px;text-transform:uppercase;letter-spacing:.05em}
 .badge-thinking{background:#f3e5f5;color:#6a1b9a;animation:pulse 1.2s ease-in-out infinite}
 .badge-streaming{background:#e3f2fd;color:#1565c0;animation:pulse .9s ease-in-out infinite}
 .badge-done{background:#e8f5e9;color:#1b5e20}
 .badge-error{background:#fce4ec;color:#880e4f}
-@keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}
-.resp-box{background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;padding:1rem;min-height:80px;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:.83rem;line-height:1.6;color:#222}
-.resp-box.waiting{color:#aaa;font-style:italic}
+@keyframes pulse{0%,100%{opacity:.5}50%{opacity:1}}
+/* Prose response box */
+.resp-box{
+  background:#fafafa;border:1px solid #e8e8e8;border-radius:8px;
+  padding:1.25rem 1.5rem;min-height:80px;
+  font-family:system-ui,-apple-system,sans-serif;font-size:.95rem;
+  line-height:1.75;color:#1a1a1a;
+  transition:opacity .3s ease;
+}
+.resp-box.waiting{color:#aaa;font-style:italic;font-size:.9rem}
+.resp-box h1{font-size:1.25rem;font-weight:700;margin:1.1rem 0 .5rem;padding-bottom:.35rem;border-bottom:1px solid #eee;color:#111}
+.resp-box h2{font-size:1.05rem;font-weight:700;margin:.95rem 0 .4rem;color:#111}
+.resp-box h3{font-size:.97rem;font-weight:600;margin:.8rem 0 .3rem;color:#333}
+.resp-box h1:first-child,.resp-box h2:first-child,.resp-box h3:first-child{margin-top:0}
+.resp-box p{margin:.55rem 0}
+.resp-box p:first-child{margin-top:0}
+.resp-box p:last-child{margin-bottom:0}
+.resp-box ul,.resp-box ol{margin:.5rem 0 .5rem 1.6rem}
+.resp-box li{margin:.25rem 0}
+.resp-box li>p{margin:.15rem 0}
+.resp-box strong{font-weight:700}
+.resp-box em{font-style:italic}
+.resp-box code{font-family:ui-monospace,Menlo,monospace;font-size:.82rem;background:#efefef;padding:.1em .38em;border-radius:3px;color:#c7254e}
+.resp-box pre{background:#f4f4f5;border:1px solid #e4e4e7;border-radius:6px;padding:.9rem 1.1rem;overflow-x:auto;margin:.75rem 0}
+.resp-box pre code{background:none;padding:0;color:#1a1a1a;font-size:.83rem}
+.resp-box blockquote{border-left:3px solid #d1d5db;margin:.7rem 0;padding:.35rem .9rem;color:#6b7280}
+.resp-box table{border-collapse:collapse;width:100%;margin:.8rem 0;font-size:.9rem}
+.resp-box th{background:#f3f4f6;font-weight:600;padding:.45rem .85rem;border:1px solid #d1d5db;text-align:left}
+.resp-box td{padding:.4rem .85rem;border:1px solid #d1d5db}
+.resp-box tr:nth-child(even) td{background:#f9fafb}
+.resp-box hr{border:none;border-top:1px solid #e5e7eb;margin:1rem 0}
+/* Copy button */
+.copy-row{display:none;justify-content:flex-end;margin-top:.75rem}
+.copy-btn{display:inline-flex;align-items:center;gap:.35rem;background:#fff;border:1px solid #d1d5db;border-radius:6px;padding:.4rem .85rem;font-size:.82rem;font-weight:500;color:#555;cursor:pointer;transition:all .15s;font-family:inherit}
+.copy-btn:hover{background:#f3f4f6;border-color:#9ca3af;color:#1a1a1a}
+.copy-btn.copied{border-color:#86efac;color:#166534;background:#f0fdf4}
 </style>
 </head>
 <body>
@@ -331,11 +366,22 @@ button[type=submit]:disabled{background:#aaa;cursor:not-allowed}
       <span class="badge" id="badge"></span>
     </div>
     <div class="resp-box" id="resp"></div>
+    <div class="copy-row" id="copy-row">
+      <button class="copy-btn" id="copy-btn" type="button" onclick="copyText()">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+        Copy response
+      </button>
+    </div>
   </div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
+let lastRawText = '';
+
+marked.setOptions({ breaks: true, gfm: true });
 
 const keyEl = $('apikey');
 keyEl.value = localStorage.getItem('cgw_key') || '';
@@ -354,23 +400,53 @@ function setBadge(state, label) {
   b.className = 'badge badge-' + state;
 }
 
-// Animate text into the response box character-by-character.
-// Speed: ~80 chars per 16ms frame, capped so any response finishes in ~1s max.
 async function animateText(text) {
   const el = $('resp');
   el.classList.remove('waiting');
+  el.style.opacity = '1';
+  // Phase 1: animate as plain text so it feels like it's streaming in
   el.textContent = '';
   const step = Math.max(3, Math.ceil(text.length / 70));
   for (let i = 0; i < text.length; i += step) {
     el.textContent = text.slice(0, i + step);
     await new Promise(r => setTimeout(r, 16));
   }
+  // Phase 2: cross-fade into rendered markdown
+  el.style.opacity = '0';
+  el.innerHTML = marked.parse(text);
+  await new Promise(r => setTimeout(r, 30));
+  el.style.opacity = '1';
+}
+
+async function copyText() {
+  const btn = $('copy-btn');
+  try {
+    await navigator.clipboard.writeText(lastRawText);
+  } catch {
+    // Fallback for browsers that block clipboard API
+    const ta = Object.assign(document.createElement('textarea'), {value: lastRawText});
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  }
+  btn.classList.add('copied');
+  btn.querySelector('span') && (btn.querySelector('span').textContent = 'Copied!');
+  const svg = btn.querySelector('svg');
+  const prevHTML = btn.innerHTML;
+  btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
+  setTimeout(() => {
+    btn.innerHTML = prevHTML;
+    btn.classList.remove('copied');
+  }, 2200);
 }
 
 async function stream(url, init) {
   const respEl = $('resp');
   $('resp-card').style.display = 'block';
+  $('copy-row').style.display = 'none';
   respEl.className = 'resp-box waiting';
+  respEl.style.opacity = '1';
   respEl.textContent = 'Thinking…';
   setBadge('thinking', 'Thinking…');
 
@@ -406,16 +482,17 @@ async function stream(url, init) {
             fullText += ev.answer;
           } else if (ev.status === 'error') {
             hasError = true;
-            if (ev.answer) fullText += '\\n[Error: ' + ev.answer + ']';
+            if (ev.answer) fullText += '\\n\\n> ⚠ ' + ev.answer;
           }
         } catch {}
       }
     }
 
-    // Animate the collected text in
-    setBadge('streaming', 'Streaming…');
+    lastRawText = fullText;
+    setBadge('streaming', 'Rendering…');
     await animateText(fullText);
     setBadge(hasError ? 'error' : 'done', hasError ? 'Error' : 'Done');
+    $('copy-row').style.display = 'flex';
 
   } catch (err) {
     setBadge('error', 'Error');
