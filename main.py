@@ -48,7 +48,7 @@ async def invoke_claude(prompt: str):
                 if remaining <= 0:
                     process.kill()
                     await process.wait()
-                    yield f"data: {json.dumps({'error': 'timeout'})}\n\n"
+                    yield f"data: {json.dumps({'status': 'error', 'answer': 'timeout'})}\n\n"
                     return
 
                 try:
@@ -59,16 +59,16 @@ async def invoke_claude(prompt: str):
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.wait()
-                    yield f"data: {json.dumps({'error': 'timeout'})}\n\n"
+                    yield f"data: {json.dumps({'status': 'error', 'answer': 'timeout'})}\n\n"
                     return
 
                 if not chunk:
                     break
 
-                yield f"data: {json.dumps({'text': chunk.decode('utf-8', errors='replace')})}\n\n"
+                yield f"data: {json.dumps({'status': 'streaming', 'answer': chunk.decode('utf-8', errors='replace')})}\n\n"
 
             await process.wait()
-            yield "data: [DONE]\n\n"
+            yield f"data: {json.dumps({'status': 'done', 'answer': None})}\n\n"
 
         except Exception as e:
             try:
@@ -76,7 +76,7 @@ async def invoke_claude(prompt: str):
                 await process.wait()
             except Exception:
                 pass
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'status': 'error', 'answer': str(e)})}\n\n"
 
 
 @app.post("/chat")
