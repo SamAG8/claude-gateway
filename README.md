@@ -31,16 +31,34 @@ All config lives in `.env`:
 | Variable         | Default                  | Description                                      |
 |------------------|--------------------------|--------------------------------------------------|
 | `API_KEY`        | —                        | Required. Secret passed in `X-API-Key` header.  |
+| `HOST`           | `0.0.0.0`                | Address the server binds to.                     |
+| `PORT`           | `8000`                   | Port the server listens on.                      |
 | `MAX_CONCURRENT` | `5`                      | Max simultaneous Claude invocations.             |
 | `TIMEOUT`        | `120`                    | Seconds before a hung invocation is killed.      |
-| `PORT`           | `8000`                   | Port the server listens on.                      |
 | `UPLOAD_DIR`     | `/tmp/gateway-uploads`   | Temp directory for file uploads.                 |
 | `MAX_FILE_SIZE`  | `10485760`               | Max upload size in bytes (default 10 MB).        |
+
+### Deployment (systemd)
+
+`claude-gateway.service` reads `HOST` and `PORT` from the `.env` file at runtime
+(via `EnvironmentFile`). The user, group, and install path are set by these
+variables in `.env.example` and **must match** the corresponding directives in
+the unit file, since systemd cannot expand `${VAR}` in `User=`, `Group=`,
+`WorkingDirectory=`, or `EnvironmentFile=`:
+
+| Variable        | Default                    | Unit directive it must match     |
+|-----------------|----------------------------|----------------------------------|
+| `SERVICE_USER`  | `gateway`                  | `User=`                          |
+| `SERVICE_GROUP` | `gateway`                  | `Group=`                         |
+| `INSTALL_DIR`   | `/home/gateway/claude-gateway` | `WorkingDirectory=` / `EnvironmentFile=` |
 
 ## Running
 
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
+# Honors HOST/PORT from .env:
+python3 main.py
+# ...or run uvicorn directly:
+uvicorn main:app --host "$HOST" --port "$PORT"
 ```
 
 ## API

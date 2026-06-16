@@ -19,13 +19,14 @@ mkdir -p "$UPLOAD_DIR"
 if [ -n "${API_KEY:-}" ] && [ ! -f .env ]; then
   cat > .env <<EOF
 API_KEY=${API_KEY}
+HOST=${HOST:-0.0.0.0}
+PORT=${PORT:-8000}
 MAX_CONCURRENT=${MAX_CONCURRENT:-5}
 TIMEOUT=${TIMEOUT:-120}
-PORT=${PORT:-8000}
 UPLOAD_DIR=${UPLOAD_DIR}
 MAX_FILE_SIZE=${MAX_FILE_SIZE:-10485760}
 EOF
 fi
 
-echo "==> claude-gateway: ready (uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000})"
+echo "==> claude-gateway: ready (uvicorn main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000})"
 exit 0
