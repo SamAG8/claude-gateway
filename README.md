@@ -76,7 +76,7 @@ The client's model string is resolved to a real `claude --model` value via
 
 ## Setup
 
-**Requirements:** Python 3.10+, the [Claude CLI](https://claude.ai/code) installed and authenticated.
+**Requirements:** Python 3.14, the [Claude CLI](https://claude.ai/code) installed and authenticated.
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
