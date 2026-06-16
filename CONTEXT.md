@@ -6,9 +6,13 @@
 
 **Invocation** — a single stateless call to the `claude` CLI via subprocess (stream-json in, stream-json out). No conversation history is retained between invocations; multi-turn requests are replayed each call.
 
-**Adapter** — a per-protocol module (`gateway/adapters/{anthropic,openai,gemini}.py`) that validates auth, translates the protocol's request into a Canonical Request, calls the engine, and formats the Canonical Event stream back into that protocol's exact response shape and native error envelope.
+**Adapter** — a per-protocol module (`gateway/adapters/{anthropic,openai,gemini}.py`) that validates auth, translates the protocol's request into a Canonical Request, and supplies a Formatter to the Renderer. Each adapter holds only the protocol-specific translation and formatting; the event-driving and termination logic live once in the Renderer.
 
-**Canonical Request / Canonical Event** — the internal contract (`gateway/canonical.py`) that every adapter speaks to the engine. The request carries model, system text, messages (text/image blocks), and stream flag; the engine yields a tagged event stream (`start` / `delta` / `stop` / `error`) that adapters render. The engine never imports an adapter.
+**Canonical Request / Canonical Event** — the internal contract (`gateway/canonical.py`) that every adapter speaks to the engine. The request carries model, system text, messages (text/image blocks), and stream flag; the engine yields a typed Canonical Event union — `Start` / `Delta` / `Stop` / `Error` — that the Renderer dispatches on. The engine never imports an adapter.
+
+**Renderer** — the deep module (`gateway/protocol.py`) that drives the engine's Canonical Event stream once for every protocol, owning event ordering, termination, and the stream-vs-`collect` split. It crosses a single seam: the Formatter.
+
+**Formatter** — the seam the Renderer crosses: a small, per-request, per-protocol Adapter (defined inside each `gateway/adapters/*` module) that renders each Canonical Event into that protocol's SSE chunks and builds its non-streaming body. Two+ Formatters make the seam real.
 
 **Engine** — `gateway/engine.py`; builds the `claude` command line and stdin, spawns the subprocess under a concurrency semaphore with a per-invocation timeout, parses the `stream-json` output, and yields Canonical Events. One code path serves streaming and non-streaming.
 

@@ -4,6 +4,7 @@ import json
 import pytest
 
 from conftest import TEST_KEY, sse_events
+from gateway.canonical import Error
 
 # 1x1 transparent PNG
 PNG_B64 = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQ"
@@ -203,7 +204,7 @@ async def test_gemini_models_list(client, mock_engine):
 # ====================== error propagation ======================
 
 async def test_anthropic_engine_error_envelope(client, mock_engine):
-    mock_engine["events"] = [{"t": "error", "status": 502, "message": "upstream boom"}]
+    mock_engine["events"] = [Error(502, "upstream boom")]
     r = await client.post("/v1/messages", headers=AUTH_A, json={
         "model": "claude-sonnet-4-6", "max_tokens": 10,
         "messages": [{"role": "user", "content": "hi"}]})

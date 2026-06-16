@@ -8,7 +8,16 @@ import json
 from typing import AsyncIterator
 
 from . import config
-from .canonical import CanonicalRequest, map_stop_reason
+from .canonical import (
+    CanonicalEvent,
+    CanonicalRequest,
+    Delta,
+    Error,
+    Result,
+    Start,
+    Stop,
+    map_stop_reason,
+)
 
 _semaphore: asyncio.Semaphore | None = None
 
@@ -105,11 +114,10 @@ def build_stdin(req: CanonicalRequest) -> bytes:
     return (json.dumps(msg) + "\n").encode()
 
 
-async def run_claude(req: CanonicalRequest) -> AsyncIterator[dict]:
+async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
     """Spawn `claude` for one stateless invocation and yield CanonicalEvents."""
     if config.ISOLATION_MODE == "bare" and not config.ANTHROPIC_API_KEY:
-        yield {"t": "error", "status": 500,
-               "message": "ISOLATION_MODE=bare requires ANTHROPIC_API_KEY in the environment"}
+        yield Error(500, "ISOLATION_MODE=bare requires ANTHROPIC_API_KEY in the environment")
         return
 
     ensure_clean_cwd()
@@ -126,7 +134,7 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[dict]:
                 cwd=str(config.CLEAN_CWD),
             )
         except FileNotFoundError:
-            yield {"t": "error", "status": 500, "message": "claude CLI not found on PATH"}
+            yield Error(500, "claude CLI not found on PATH")
             return
 
         try:
@@ -149,14 +157,14 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[dict]:
                 if remaining <= 0:
                     process.kill()
                     await process.wait()
-                    yield {"t": "error", "status": 504, "message": "upstream timeout"}
+                    yield Error(504, "upstream timeout")
                     return
                 try:
                     line = await asyncio.wait_for(process.stdout.readline(), timeout=remaining)
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.wait()
-                    yield {"t": "error", "status": 504, "message": "upstream timeout"}
+                    yield Error(504, "upstream timeout")
                     return
 
                 if not line:
@@ -176,12 +184,11 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[dict]:
                         usage = msg.get("usage", {})
                         cap_in = usage.get("input_tokens")
                         started = True
-                        yield {"t": "start", "model": msg.get("model"),
-                               "input_tokens": usage.get("input_tokens", 0)}
+                        yield Start(model=msg.get("model"), input_tokens=usage.get("input_tokens", 0))
                     elif etype == "content_block_delta":
                         delta = ev.get("delta", {})
                         if delta.get("type") == "text_delta":
-                            yield {"t": "delta", "text": delta.get("text", "")}
+                            yield Delta(text=delta.get("text", ""))
                     elif etype == "message_delta":
                         cap_stop = ev.get("delta", {}).get("stop_reason", cap_stop)
                         u = ev.get("usage", {})
@@ -189,17 +196,15 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[dict]:
                             cap_out = u["output_tokens"]
                 elif otype == "result":
                     if obj.get("is_error") or obj.get("subtype") != "success":
-                        yield {"t": "error", "status": 502,
-                               "message": obj.get("result") or "upstream error"}
+                        yield Error(502, obj.get("result") or "upstream error")
                         await process.wait()
                         return
                     usage = obj.get("usage", {})
-                    yield {
-                        "t": "stop",
-                        "stop_reason": map_stop_reason(obj.get("stop_reason") or cap_stop),
-                        "output_tokens": usage.get("output_tokens", cap_out or 0),
-                        "input_tokens": usage.get("input_tokens", cap_in or 0),
-                    }
+                    yield Stop(
+                        stop_reason=map_stop_reason(obj.get("stop_reason") or cap_stop),
+                        output_tokens=usage.get("output_tokens", cap_out or 0),
+                        input_tokens=usage.get("input_tokens", cap_in or 0),
+                    )
                     await process.wait()
                     return
                 # ignore: system, assistant, rate_limit_event, hook/status lines
@@ -213,46 +218,45 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[dict]:
                 except Exception:
                     pass
                 msg = err.decode("utf-8", errors="replace").strip()[:500]
-                yield {"t": "error", "status": 502, "message": msg or "no output from claude"}
+                yield Error(502, msg or "no output from claude")
             else:
-                yield {"t": "stop", "stop_reason": map_stop_reason(cap_stop),
-                       "output_tokens": cap_out or 0, "input_tokens": cap_in or 0}
+                yield Stop(stop_reason=map_stop_reason(cap_stop),
+                           output_tokens=cap_out or 0, input_tokens=cap_in or 0)
         except Exception as e:  # noqa: BLE001 - surface any spawn/read failure as an error event
             try:
                 process.kill()
                 await process.wait()
             except Exception:
                 pass
-            yield {"t": "error", "status": 500, "message": str(e)}
+            yield Error(500, str(e))
 
 
-async def collect(req: CanonicalRequest) -> dict:
-    """Drain run_claude into a single non-streaming result for adapters to format."""
+async def collect(req: CanonicalRequest) -> Result:
+    """Drain run_claude into a single non-streaming Result for adapters to format."""
     text_parts: list[str] = []
     model = req.requested_model
     stop_reason = "end_turn"
     input_tokens = 0
     output_tokens = 0
-    error = None
+    error: Error | None = None
     async for ev in run_claude(req):
-        t = ev["t"]
-        if t == "start":
-            model = ev.get("model") or model
-            input_tokens = ev.get("input_tokens", 0)
-        elif t == "delta":
-            text_parts.append(ev["text"])
-        elif t == "stop":
-            stop_reason = ev["stop_reason"]
-            output_tokens = ev.get("output_tokens", 0)
-            input_tokens = ev.get("input_tokens", input_tokens)
-        elif t == "error":
+        if isinstance(ev, Start):
+            model = ev.model or model
+            input_tokens = ev.input_tokens
+        elif isinstance(ev, Delta):
+            text_parts.append(ev.text)
+        elif isinstance(ev, Stop):
+            stop_reason = ev.stop_reason
+            output_tokens = ev.output_tokens
+            input_tokens = ev.input_tokens
+        elif isinstance(ev, Error):
             error = ev
             break
-    return {
-        "text": "".join(text_parts),
-        "model": model,
-        "stop_reason": stop_reason,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "error": error,
-    }
+    return Result(
+        text="".join(text_parts),
+        model=model,
+        stop_reason=stop_reason,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        error=error,
+    )

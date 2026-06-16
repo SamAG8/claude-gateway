@@ -1,13 +1,16 @@
 """Google Gemini adapter — /v1beta/models/{model}:generate*/stream*, GET /v1beta/models (§9c)."""
-from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from typing import Iterable
 
-from .. import engine, models
-from ..canonical import CanonicalMessage, CanonicalRequest
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
+
+from .. import models, protocol
+from ..canonical import CanonicalMessage, CanonicalRequest, Delta, Error, Result, Start, Stop, map_reason
 from ..content import image_block
 from ..errors import GatewayError, gemini_error, key_is_valid
 from ..models import resolve_model
-from ._util import SSE_HEADERS, sse
+from ..translate import join_texts, to_role
+from ._util import sse
 
 router = APIRouter()
 
@@ -15,7 +18,7 @@ _FINISH = {"end_turn": "STOP", "max_tokens": "MAX_TOKENS"}
 
 
 def _finish(reason: str) -> str:
-    return _FINISH.get(reason, "OTHER")
+    return map_reason(_FINISH, reason, "OTHER")
 
 
 def _api_key(request: Request) -> str | None:
@@ -25,14 +28,12 @@ def _api_key(request: Request) -> str | None:
 def _system(si) -> str | None:
     if not si:
         return None
-    parts = si.get("parts", [])
-    return "\n".join(p.get("text", "") for p in parts if "text" in p) or None
+    return join_texts(si.get("parts", []))
 
 
 def _to_messages(contents) -> list[CanonicalMessage]:
     out = []
     for c in contents:
-        role = "assistant" if c.get("role") == "model" else "user"
         blocks: list[dict] = []
         for p in c.get("parts", []):
             if "text" in p:
@@ -42,7 +43,7 @@ def _to_messages(contents) -> list[CanonicalMessage]:
                 if inline:
                     media_type = inline.get("mime_type") or inline.get("mimeType")
                     blocks.append(image_block(media_type, inline.get("data", "")))
-        out.append(CanonicalMessage(role=role, blocks=blocks))
+        out.append(CanonicalMessage(role=to_role(c.get("role"), ("model", "assistant")), blocks=blocks))
     return out
 
 
@@ -64,22 +65,23 @@ def _build(model_name: str, body: dict, stream: bool) -> CanonicalRequest:
     )
 
 
-def _usage(prompt: int, completion: int) -> dict:
-    return {"promptTokenCount": prompt, "candidatesTokenCount": completion,
-            "totalTokenCount": prompt + completion}
+def _unauthorized(request: Request) -> JSONResponse | None:
+    if not key_is_valid(_api_key(request)):
+        return gemini_error(401, "missing or invalid API key")
+    return None
 
 
 @router.get("/v1beta/models")
 async def list_models(request: Request):
-    if not key_is_valid(_api_key(request)):
-        return gemini_error(401, "missing or invalid API key")
+    if (resp := _unauthorized(request)) is not None:
+        return resp
     return JSONResponse(models.gemini_models_payload())
 
 
 @router.post("/v1beta/models/{model_method:path}")
 async def generate(model_method: str, request: Request):
-    if not key_is_valid(_api_key(request)):
-        return gemini_error(401, "missing or invalid API key")
+    if (resp := _unauthorized(request)) is not None:
+        return resp
     if ":" not in model_method:
         return gemini_error(400, "expected models/{model}:{method}")
     model_name, method = model_method.rsplit(":", 1)
@@ -94,48 +96,50 @@ async def generate(model_method: str, request: Request):
         req = _build(model_name, body, stream)
     except GatewayError as e:
         return gemini_error(e.status, e.message)
-
-    if stream:
-        return StreamingResponse(_stream(req), media_type="text/event-stream", headers=SSE_HEADERS)
-    return await _complete(req)
+    return await protocol.respond(req, _Formatter(req))
 
 
-async def _complete(req: CanonicalRequest):
-    out = await engine.collect(req)
-    if out["error"]:
-        return gemini_error(out["error"]["status"], out["error"]["message"])
-    return JSONResponse({
-        "candidates": [{
-            "content": {"role": "model", "parts": [{"text": out["text"]}]},
-            "finishReason": _finish(out["stop_reason"]),
-            "index": 0,
-        }],
-        "usageMetadata": _usage(out["input_tokens"], out["output_tokens"]),
-        "modelVersion": out["model"],
-    })
+def _usage(prompt: int, completion: int) -> dict:
+    return {"promptTokenCount": prompt, "candidatesTokenCount": completion,
+            "totalTokenCount": prompt + completion}
 
 
-async def _stream(req: CanonicalRequest):
-    model = req.requested_model
-    prompt = completion = 0
-    async for ev in engine.run_claude(req):
-        t = ev["t"]
-        if t == "start":
-            model = ev.get("model") or model
-            prompt = ev.get("input_tokens", 0)
-        elif t == "delta":
-            yield sse({"candidates": [{
-                "content": {"role": "model", "parts": [{"text": ev["text"]}]}, "index": 0}]})
-        elif t == "stop":
-            completion = ev.get("output_tokens", 0)
-            prompt = ev.get("input_tokens", prompt)
-            yield sse({
-                "candidates": [{"content": {"role": "model", "parts": [{"text": ""}]},
-                                "finishReason": _finish(ev["stop_reason"]), "index": 0}],
-                "usageMetadata": _usage(prompt, completion),
-                "modelVersion": model,
-            })
-            return
-        elif t == "error":
-            yield sse({"error": {"code": ev["status"], "message": ev["message"], "status": "INTERNAL"}})
-            return
+class _Formatter:
+    def __init__(self, req: CanonicalRequest):
+        self.model = req.requested_model
+        self.prompt = 0
+
+    def on_start(self, ev: Start) -> Iterable[str]:
+        self.model = ev.model or self.model
+        self.prompt = ev.input_tokens
+        return ()  # Gemini emits nothing until it has content
+
+    def on_delta(self, ev: Delta) -> Iterable[str]:
+        yield sse({"candidates": [{
+            "content": {"role": "model", "parts": [{"text": ev.text}]}, "index": 0}]})
+
+    def on_stop(self, ev: Stop) -> Iterable[str]:
+        prompt = ev.input_tokens or self.prompt
+        yield sse({
+            "candidates": [{"content": {"role": "model", "parts": [{"text": ""}]},
+                            "finishReason": _finish(ev.stop_reason), "index": 0}],
+            "usageMetadata": _usage(prompt, ev.output_tokens),
+            "modelVersion": self.model,
+        })
+
+    def on_error(self, ev: Error) -> Iterable[str]:
+        yield sse({"error": {"code": ev.status, "message": ev.message, "status": "INTERNAL"}})
+
+    def complete(self, result: Result) -> dict:
+        return {
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": result.text}]},
+                "finishReason": _finish(result.stop_reason),
+                "index": 0,
+            }],
+            "usageMetadata": _usage(result.input_tokens, result.output_tokens),
+            "modelVersion": result.model,
+        }
+
+    def error_response(self, status: int, message: str) -> JSONResponse:
+        return gemini_error(status, message)

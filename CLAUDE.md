@@ -28,17 +28,21 @@ There is no build step and no linter configured.
 
 ## Architecture: one core, three adapters
 
-The cardinal rule is **one shared engine, three thin adapters** — never duplicate CLI logic per protocol. Data flows:
+The cardinal rule is **one shared engine + renderer, three thin adapters** — never duplicate CLI or event-driving logic per protocol. Data flows:
 
 ```
-adapter (protocol request → CanonicalRequest) → engine.run_claude() → CanonicalEvent stream → adapter (→ protocol response/SSE)
+adapter (protocol request → CanonicalRequest)
+  → protocol.respond(req, Formatter) → engine.run_claude() → CanonicalEvent stream
+  → renderer dispatches each event to the Formatter → protocol response/SSE
 ```
 
-- **`gateway/canonical.py`** — the internal contract every adapter speaks to the core: `CanonicalRequest` / `CanonicalMessage` and a tagged `CanonicalEvent` dict stream (`start` / `delta` / `stop` / `error`). The engine **never imports an adapter**; adapters only ever hand the engine a `CanonicalRequest`.
-- **`gateway/engine.py`** — `run_claude(req)` builds the `claude` argv + stdin, spawns the subprocess under a concurrency semaphore with a per-invocation timeout, parses the `stream-json` JSONL output, and yields `CanonicalEvent`s. `collect(req)` drains that same generator into one object for non-streaming callers. **This one code path serves both streaming and non-streaming on all three surfaces.**
-- **`gateway/adapters/{anthropic,openai,gemini}.py`** — each is a FastAPI `APIRouter` that (1) validates that protocol's auth, (2) translates the request into a `CanonicalRequest`, (3) calls `run_claude`/`collect`, (4) formats the events into the protocol's exact JSON/SSE and native error envelope. Wired into the app in `main.py`.
+- **`gateway/canonical.py`** — the internal contract every adapter speaks to the core: `CanonicalRequest` / `CanonicalMessage` and the **typed** `CanonicalEvent` union (`Start` / `Delta` / `Stop` / `Error`), plus the drained `Result`. The engine **never imports an adapter**; adapters only ever hand the engine a `CanonicalRequest`.
+- **`gateway/engine.py`** — `run_claude(req)` builds the `claude` argv + stdin, spawns the subprocess under a concurrency semaphore with a per-invocation timeout, parses the `stream-json` JSONL output, and yields typed `CanonicalEvent`s. `collect(req)` drains that same generator into a `Result` for non-streaming callers.
+- **`gateway/protocol.py`** — the **Renderer**: `respond(req, formatter)` / `stream_response` / `complete_response` drive the event stream once and own ordering, termination, and the stream-vs-`collect` split. The per-protocol **Formatter** (a small stateful class defined inside each adapter) is the only seam — it renders each event kind to SSE chunks and builds the non-streaming body. **Do not re-implement the event loop in an adapter; add/extend a Formatter.**
+- **`gateway/adapters/{anthropic,openai,gemini}.py`** — each is a FastAPI `APIRouter` that (1) validates that protocol's auth (`_unauthorized`), (2) translates the request into a `CanonicalRequest` (`_build`), (3) calls `protocol.respond` with its `_Formatter`. Wired into the app in `main.py`.
+- **`gateway/translate.py`** — shared request-translation helpers (`join_texts`, `to_role`). Protocol-specific content-block shapes (image/document/inline_data) stay in the adapters — that variation is a false seam if unified.
 - **`gateway/models.py` + `models.json`** — `resolve_model(requested)` maps a client model string to a real `claude --model` value: `passthrough_prefixes` (e.g. `claude-`) pass straight through, known aliases map to a tier, everything else falls back to the default. **Unknown models must never error** — they fall back. `models.json` is hot-reloaded by mtime.
-- **`gateway/errors.py`** — constant-time multi-key auth (`key_is_valid` over `config.API_KEYS`) and per-protocol error envelope builders. **Each adapter must return its own protocol's native error shape**, not a generic one.
+- **`gateway/errors.py`** — constant-time multi-key auth (`key_is_valid` over `config.API_KEYS`) and per-protocol error envelopes. One `_STATUS_KIND` taxonomy maps HTTP status → canonical kind; each protocol maps the kind to its own string. **Each adapter returns its own protocol's native error shape**, not a generic one.
 - **`gateway/content.py`** — decoding/validation of inbound media into canonical blocks: `MAX_FILE_SIZE` enforcement on decoded base64, PDF→text via pdfplumber, OpenAI data-URI parsing.
 
 ## Critical invariants

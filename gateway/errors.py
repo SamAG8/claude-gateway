@@ -1,7 +1,7 @@
 """Per-protocol error envelopes + constant-time API-key auth.
 
-Each adapter returns its upstream's native error shape so SDKs parse failures
-exactly as they would from the real service.
+The HTTP-status taxonomy lives in one place (`_STATUS_KIND`); each protocol is a
+thin adapter that maps a canonical kind to its own string and shapes the envelope.
 """
 import hmac
 
@@ -31,52 +31,56 @@ def key_is_valid(provided: str | None) -> bool:
     return ok
 
 
-# --- Anthropic -----------------------------------------------------------
+# Canonical meaning of each HTTP status the gateway emits — the single taxonomy.
+# "server" (500) and "unavailable" (502/504) are distinct: some protocols name them differently.
+_STATUS_KIND = {
+    400: "invalid_request", 401: "auth", 403: "permission", 404: "not_found",
+    413: "too_large", 429: "rate_limit", 500: "server", 502: "unavailable", 504: "unavailable",
+}
 
-_ANTHROPIC_TYPES = {
-    400: "invalid_request_error", 401: "authentication_error", 403: "permission_error",
-    404: "not_found_error", 413: "request_too_large", 429: "rate_limit_error",
-    500: "api_error", 502: "api_error", 504: "api_error",
+
+def _kind(status: int) -> str:
+    return _STATUS_KIND.get(status, "server")
+
+
+# Each protocol maps the canonical kind to its own type string.
+_ANTHROPIC = {
+    "invalid_request": "invalid_request_error", "auth": "authentication_error",
+    "permission": "permission_error", "not_found": "not_found_error",
+    "too_large": "request_too_large", "rate_limit": "rate_limit_error",
+    "server": "api_error", "unavailable": "api_error",
+}
+_OPENAI = {
+    "invalid_request": "invalid_request_error", "auth": "authentication_error",
+    "permission": "permission_error", "not_found": "not_found_error",
+    "too_large": "invalid_request_error", "rate_limit": "rate_limit_error",
+    "server": "api_error", "unavailable": "api_error",
+}
+_GEMINI = {
+    "invalid_request": "INVALID_ARGUMENT", "auth": "UNAUTHENTICATED",
+    "permission": "PERMISSION_DENIED", "not_found": "NOT_FOUND",
+    "too_large": "INVALID_ARGUMENT", "rate_limit": "RESOURCE_EXHAUSTED",
+    "server": "INTERNAL", "unavailable": "UNAVAILABLE",
 }
 
 
 def anthropic_error(status: int, message: str, err_type: str | None = None) -> JSONResponse:
-    t = err_type or _ANTHROPIC_TYPES.get(status, "api_error")
+    t = err_type or _ANTHROPIC[_kind(status)]
     return JSONResponse(status_code=status,
                         content={"type": "error", "error": {"type": t, "message": message}})
 
 
-# --- OpenAI --------------------------------------------------------------
-
-_OPENAI_TYPES = {
-    400: "invalid_request_error", 401: "authentication_error", 403: "permission_error",
-    404: "not_found_error", 413: "invalid_request_error", 429: "rate_limit_error",
-    500: "api_error", 502: "api_error", 504: "api_error",
-}
-
-
 def openai_error(status: int, message: str, err_type: str | None = None, code=None) -> JSONResponse:
-    t = err_type or _OPENAI_TYPES.get(status, "api_error")
-    return JSONResponse(status_code=status,
-                        content={"error": {"message": message, "type": t, "param": None, "code": code}})
+    return JSONResponse(status_code=status, content=openai_error_dict(status, message, err_type, code))
 
 
-def openai_error_dict(status: int, message: str) -> dict:
-    """Same envelope as a dict, for embedding in an SSE error chunk."""
-    return {"error": {"message": message, "type": _OPENAI_TYPES.get(status, "api_error"),
-                      "param": None, "code": None}}
-
-
-# --- Gemini --------------------------------------------------------------
-
-_GEMINI_STATUS = {
-    400: "INVALID_ARGUMENT", 401: "UNAUTHENTICATED", 403: "PERMISSION_DENIED",
-    404: "NOT_FOUND", 413: "INVALID_ARGUMENT", 429: "RESOURCE_EXHAUSTED",
-    500: "INTERNAL", 502: "UNAVAILABLE", 504: "UNAVAILABLE",
-}
+def openai_error_dict(status: int, message: str, err_type: str | None = None, code=None) -> dict:
+    """The OpenAI envelope as a dict, for embedding in an SSE error chunk."""
+    t = err_type or _OPENAI[_kind(status)]
+    return {"error": {"message": message, "type": t, "param": None, "code": code}}
 
 
 def gemini_error(status: int, message: str, status_str: str | None = None) -> JSONResponse:
-    s = status_str or _GEMINI_STATUS.get(status, "INTERNAL")
+    s = status_str or _GEMINI[_kind(status)]
     return JSONResponse(status_code=status,
                         content={"error": {"code": status, "message": message, "status": s}})
