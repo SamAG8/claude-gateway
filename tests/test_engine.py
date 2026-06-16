@@ -4,7 +4,15 @@ import json
 import pytest
 
 from gateway import config, engine
-from gateway.canonical import CanonicalMessage, CanonicalRequest, map_stop_reason
+from gateway.canonical import (
+    CanonicalMessage,
+    CanonicalRequest,
+    Delta,
+    Error,
+    Start,
+    Stop,
+    map_stop_reason,
+)
 
 from conftest import ERROR_LINES
 
@@ -110,28 +118,27 @@ def test_map_stop_reason_is_error_overrides():
 
 async def test_run_claude_yields_canonical_events(fake_claude):
     events = await _drain(_req())
-    assert events[0] == {"t": "start", "model": "claude-sonnet-4-6", "input_tokens": 136}
-    deltas = [e["text"] for e in events if e["t"] == "delta"]
+    assert events[0] == Start(model="claude-sonnet-4-6", input_tokens=136)
+    deltas = [e.text for e in events if isinstance(e, Delta)]
     assert "".join(deltas) == "PING"
-    stop = events[-1]
-    assert stop == {"t": "stop", "stop_reason": "end_turn", "output_tokens": 5, "input_tokens": 136}
+    assert events[-1] == Stop(stop_reason="end_turn", output_tokens=5, input_tokens=136)
 
 
 async def test_collect_assembles_single_result(fake_claude):
     out = await engine.collect(_req(stream=False))
-    assert out["text"] == "PING"
-    assert out["model"] == "claude-sonnet-4-6"
-    assert out["stop_reason"] == "end_turn"
-    assert out["input_tokens"] == 136 and out["output_tokens"] == 5
-    assert out["error"] is None
+    assert out.text == "PING"
+    assert out.model == "claude-sonnet-4-6"
+    assert out.stop_reason == "end_turn"
+    assert out.input_tokens == 136 and out.output_tokens == 5
+    assert out.error is None
 
 
 async def test_run_claude_surfaces_cli_error(fake_claude):
     fake_claude["lines"] = ERROR_LINES
     events = await _drain(_req())
-    assert events[-1]["t"] == "error"
-    assert events[-1]["status"] == 502
-    assert "boom" in events[-1]["message"]
+    assert isinstance(events[-1], Error)
+    assert events[-1].status == 502
+    assert "boom" in events[-1].message
 
 
 async def test_run_claude_stdin_is_written(fake_claude):
@@ -145,5 +152,5 @@ async def test_bare_mode_requires_anthropic_key(fake_claude, monkeypatch):
     monkeypatch.setattr(config, "ISOLATION_MODE", "bare")
     monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "")
     events = await _drain(_req())
-    assert events == [{"t": "error", "status": 500,
-                       "message": "ISOLATION_MODE=bare requires ANTHROPIC_API_KEY in the environment"}]
+    assert events == [Error(500,
+                            "ISOLATION_MODE=bare requires ANTHROPIC_API_KEY in the environment")]

@@ -22,8 +22,8 @@ async def test_clean_invocation_returns_ping_without_contamination():
         stream=False,
     )
     out = await engine.collect(req)
-    assert out["error"] is None, out["error"]
-    assert out["text"].strip() == "PING"
+    assert out.error is None, out.error
+    assert out.text.strip() == "PING"
     # The contaminated system prompt was ~34k cache tokens; clean should be tiny.
-    assert out["input_tokens"] < 2000, f"input_tokens too high: {out['input_tokens']}"
-    assert out["output_tokens"] > 0
+    assert out.input_tokens < 2000, f"input_tokens too high: {out.input_tokens}"
+    assert out.output_tokens > 0

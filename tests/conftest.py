@@ -121,14 +121,15 @@ def mock_engine(monkeypatch):
     ``state['events']`` to override the yielded canonical events.
     """
     from gateway import config, engine
+    from gateway.canonical import Delta, Start, Stop
 
     state = {
         "req": None,
         "events": [
-            {"t": "start", "model": "claude-sonnet-4-6", "input_tokens": 11},
-            {"t": "delta", "text": "Hello"},
-            {"t": "delta", "text": " there"},
-            {"t": "stop", "stop_reason": "end_turn", "output_tokens": 3, "input_tokens": 11},
+            Start(model="claude-sonnet-4-6", input_tokens=11),
+            Delta(text="Hello"),
+            Delta(text=" there"),
+            Stop(stop_reason="end_turn", output_tokens=3, input_tokens=11),
         ],
     }
 
