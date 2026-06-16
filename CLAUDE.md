@@ -26,6 +26,8 @@ RUN_LIVE=1 pytest tests/test_live_smoke.py   # hits the real claude CLI (costs t
 
 There is no build step and no linter configured.
 
+CI/CD runs on GitHub Actions (`.github/workflows/ci-cd.yml`): `pytest` on every PR and push to `main`, then an SSH deploy (`scripts/deploy.sh`: git reset → pip install → `systemctl restart claude-gateway` → `/health` gate) on green pushes to `main`. Server prep + secrets are in `docs/deployment.md`.
+
 ## Architecture: one core, three adapters
 
 The cardinal rule is **one shared engine + renderer, three thin adapters** — never duplicate CLI or event-driving logic per protocol. Data flows:

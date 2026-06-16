@@ -1,0 +1,62 @@
+name: CI/CD
+
+# Run tests on every PR to main and on pushes to main; deploy only when a push
+# to main has green tests. See docs/deployment.md for the one-time server setup
+# and the list of secrets this workflow expects.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor advertised in the README (3.10+) and a current release.
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Run tests
+        # Mocked engine — no real claude CLI, no tokens. The live smoke test is
+        # skipped unless RUN_LIVE=1, so it never runs here.
+        run: python -m pytest -q
+
+  deploy:
+    name: Deploy to server
+    needs: test
+    # Never deploy on PRs or non-main branches — only real pushes to main.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Optional: create a "production" Environment in repo settings to scope the
+    # deploy secrets and/or require a manual approval before this job runs.
+    environment: production
+    # Never let two deploys run at once; queue them instead of overlapping.
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Deploy over SSH
+        # Pin to a release tag; bump deliberately (or pin to a commit SHA to harden).
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          # Abort on the first failing command in the script below.
+          script_stop: true
+          # deploy.sh updates the checkout to this exact commit, syncs deps, and
+          # restarts the service — exiting non-zero (failing the job) if the
+          # /health probe doesn't come back up.
+          script: |
+            "${{ secrets.DEPLOY_PATH || '/home/gateway/claude-gateway' }}/scripts/deploy.sh" "${{ github.sha }}"
