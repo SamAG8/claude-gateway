@@ -16,6 +16,7 @@ load_dotenv()
 API_KEY = os.getenv("API_KEY", "")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "5"))
 TIMEOUT = int(os.getenv("TIMEOUT", "120"))
+HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "/tmp/gateway-uploads"))
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(10 * 1024 * 1024)))  # 10 MB
@@ -596,4 +597,4 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(app, host=HOST, port=PORT)
