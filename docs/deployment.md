@@ -7,7 +7,7 @@ pulls the new commit, updates deps, and restarts the systemd service.
 git push origin main
         │
         ▼
-GitHub Actions ── test job ──────────────► python -m pytest  (matrix: 3.10, 3.12)
+GitHub Actions ── test job ──────────────► python -m pytest  (Python 3.14)
    (.github/workflows/ci-cd.yml)              │  mocked engine, no claude CLI, no tokens
         │                                     ▼ green
         └── deploy job (push to main only) ── ssh ──► your server
