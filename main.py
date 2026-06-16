@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from gateway import config
+from gateway.adapters import anthropic, gemini, openai
 from gateway.engine import ensure_clean_cwd
 
 logging.basicConfig(level=logging.INFO)
@@ -39,6 +40,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+app.include_router(anthropic.router)
+app.include_router(openai.router)
+app.include_router(gemini.router)
 
 
 @app.get("/health")
