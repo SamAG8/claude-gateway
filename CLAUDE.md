@@ -59,3 +59,17 @@ Adapter and engine tests **mock, never call the real CLI**:
 - Config is module-level constants in `gateway/config.py`, read once from env at import (see `.env.example`). Auth accepts `API_KEY` plus optional comma-separated `API_KEYS`.
 - `CONTEXT.md` holds the project glossary (Adapter, Canonical Request/Event, Engine, Isolation Mode, Model Map) — keep it in sync when these concepts change.
 - Scope is deliberately bounded: no tool/function calling, embeddings, audio, image-gen, batch, or multi-tenant key management (see README "Known limitations" and the issue's non-goals).
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs live as GitHub issues on `SamAG8/claude-gateway` (`gh` CLI locally, or the `mcp__github__*` tools in remote sessions). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical defaults (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`); none customised yet. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one root `CONTEXT.md` (+ `CLAUDE.md`); ADRs in `docs/adr/` created lazily. See `docs/agents/domain.md`.
