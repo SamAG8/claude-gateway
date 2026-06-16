@@ -106,3 +106,58 @@ def fake_claude(monkeypatch):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
     return holder
+
+
+# --- Adapter-level fixtures (mock the engine, not the subprocess) ---------
+
+TEST_KEY = "testkey"
+
+
+@pytest.fixture
+def mock_engine(monkeypatch):
+    """Patch engine.run_claude with a canned canonical stream and capture the request.
+
+    ``state['req']`` holds the CanonicalRequest the adapter produced; set
+    ``state['events']`` to override the yielded canonical events.
+    """
+    from gateway import config, engine
+
+    state = {
+        "req": None,
+        "events": [
+            {"t": "start", "model": "claude-sonnet-4-6", "input_tokens": 11},
+            {"t": "delta", "text": "Hello"},
+            {"t": "delta", "text": " there"},
+            {"t": "stop", "stop_reason": "end_turn", "output_tokens": 3, "input_tokens": 11},
+        ],
+    }
+
+    async def fake_run(req):
+        state["req"] = req
+        for ev in state["events"]:
+            yield ev
+
+    monkeypatch.setattr(engine, "run_claude", fake_run)
+    monkeypatch.setattr(config, "API_KEYS", {TEST_KEY})
+    return state
+
+
+@pytest.fixture
+async def client():
+    from httpx import ASGITransport, AsyncClient
+
+    from main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+def sse_events(text: str) -> list[str]:
+    """Split an SSE body into the raw payload of each `data:` line."""
+    out = []
+    for block in text.strip().split("\n\n"):
+        for line in block.splitlines():
+            if line.startswith("data:"):
+                out.append(line[len("data:"):].strip())
+    return out

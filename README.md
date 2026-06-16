@@ -1,153 +1,144 @@
 # claude-gateway
 
-A lightweight Python HTTP gateway that accepts prompts and documents from external clients and streams responses from Claude CLI via Server-Sent Events (SSE).
+A multi-protocol, **drop-in model API** backed by the local Claude CLI. Point any
+Anthropic, OpenAI, or Google Gemini SDK at this server by changing only the
+`base_url` — the gateway speaks all three wire protocols and runs `claude` locally
+behind the scenes.
+
+```
+Anthropic SDK ─► POST /v1/messages ─────────────┐
+OpenAI SDK    ─► POST /v1/chat/completions ──────┼─► canonical request ─► claude CLI
+Gemini SDK    ─► POST /v1beta/models/*:generate* ┘        (isolated)      └─► canonical events
+                                                                              │
+                                              each adapter ◄── formats that protocol's response/SSE
+```
+
+Each surface accepts **text + images**, supports **streaming and non-streaming**,
+returns **real token usage**, and emits responses byte-shaped like the real upstream.
+
+## Drop-in usage
+
+```python
+from anthropic import Anthropic
+Anthropic(base_url="http://host:8000", api_key="GATEWAY_KEY").messages.create(
+    model="claude-sonnet-4-6", max_tokens=100,
+    messages=[{"role": "user", "content": "Say hi"}])
+
+from openai import OpenAI
+OpenAI(base_url="http://host:8000/v1", api_key="GATEWAY_KEY").chat.completions.create(
+    model="gpt-4o", messages=[{"role": "user", "content": "Say hi"}])
+
+import google.generativeai as genai   # client_options.api_endpoint -> http://host:8000
+```
+
+## Endpoints
+
+| Surface | Endpoint(s) | Auth header |
+|---|---|---|
+| **Anthropic Messages** | `POST /v1/messages` | `x-api-key` (or `Authorization: Bearer`) |
+| **OpenAI Chat Completions** | `POST /v1/chat/completions`, `GET /v1/models` | `Authorization: Bearer` |
+| **Google Gemini** | `POST /v1beta/models/{model}:generateContent`, `:streamGenerateContent`, `GET /v1beta/models` | `x-goog-api-key` or `?key=` |
+| Health | `GET /health` (no auth) | — |
 
 ## How it works
 
-```
-Client → POST /chat   → FastAPI → subprocess: claude -p          → SSE stream → Client
-Client → POST /analyze → FastAPI → pdfplumber / base64 → claude  → SSE stream → Client
-```
+One shared core, three thin adapters:
 
-Text prompts invoke `claude -p` directly. Document analysis extracts PDF text via pdfplumber, or sends images as base64 via the Claude CLI's stream-json input format. All responses stream back as SSE events.
+- **Adapters** (`gateway/adapters/*`) translate each protocol's request into a
+  **canonical request** and format the canonical event stream back into that
+  protocol's response (JSON or SSE) and native error envelope.
+- **The engine** (`gateway/engine.py`) builds one **isolated** `claude` invocation
+  and parses its `stream-json` output into canonical events. The same code path
+  serves streaming and non-streaming on every surface.
+
+### Isolation (clean model behavior)
+
+By default the gateway strips the machine's personal context so it behaves like a
+clean model API, not your coding assistant. Every call passes `--system-prompt`
+(client system message, or `"You are a helpful assistant."`), `--setting-sources ""`
+(no user/project/local settings or `SessionStart` hooks), `--tools ""` (all tools
+off), and runs in a throwaway working directory (no `CLAUDE.md`). Set
+`ISOLATION_MODE=bare` to instead use `--bare` (requires `ANTHROPIC_API_KEY`); the
+default `clean` keeps the machine's existing subscription/OAuth login.
+
+### Model mapping
+
+The client's model string is resolved to a real `claude --model` value via
+`models.json` (editable, hot-reloaded by mtime):
+
+1. Anything matching a `passthrough_prefixes` entry (default `claude-`) is passed
+   straight through — so `claude-sonnet-4-6`, `sonnet`, `opus`, `haiku` work and
+   stay current as Claude's aliases track the latest models.
+2. Otherwise a known alias (e.g. `gpt-4o → sonnet`, `gemini-1.5-pro → opus`) maps to a tier.
+3. Otherwise it falls back to the default. **Unknown models never error.**
 
 ## Setup
 
-**Requirements:** Python 3.10+, [Claude CLI](https://claude.ai/code) installed and authenticated.
+**Requirements:** Python 3.10+, the [Claude CLI](https://claude.ai/code) installed and authenticated.
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-
-cp .env.example .env
-# Edit .env and set a strong API_KEY
+cp .env.example .env        # set a strong API_KEY
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-## Configuration
+## Configuration (`.env`)
 
-All config lives in `.env`:
+| Variable | Default | Description |
+|---|---|---|
+| `API_KEY` | — | Required shared secret. `API_KEYS` (comma-separated) adds more accepted keys. |
+| `ISOLATION_MODE` | `clean` | `clean` (system-prompt override + no settings; keeps subscription auth) or `bare` (`--bare`, requires `ANTHROPIC_API_KEY`). |
+| `MAX_CONCURRENT` | `5` | Max simultaneous CLI invocations (semaphore). |
+| `TIMEOUT` | `120` | Per-invocation seconds before the subprocess is killed (→ 504). |
+| `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address / port (read by `python3 main.py`). |
+| `MAX_FILE_SIZE` | `10485760` | Max decoded image/document bytes (→ 413). |
+| `MODELS_FILE` | `models.json` | Model-map path (hot-reloaded by mtime). |
+| `DEFAULT_MODEL` | — | Overrides the map's `default` when set. |
 
-| Variable         | Default                  | Description                                      |
-|------------------|--------------------------|--------------------------------------------------|
-| `API_KEY`        | —                        | Required. Secret passed in `X-API-Key` header.  |
-| `HOST`           | `0.0.0.0`                | Address the server binds to.                     |
-| `PORT`           | `8000`                   | Port the server listens on.                      |
-| `MAX_CONCURRENT` | `5`                      | Max simultaneous Claude invocations.             |
-| `TIMEOUT`        | `120`                    | Seconds before a hung invocation is killed.      |
-| `UPLOAD_DIR`     | `/tmp/gateway-uploads`   | Temp directory for file uploads.                 |
-| `MAX_FILE_SIZE`  | `10485760`               | Max upload size in bytes (default 10 MB).        |
-
-### Deployment (systemd)
-
-`claude-gateway.service` reads `HOST` and `PORT` from the `.env` file at runtime
-(via `EnvironmentFile`). The user, group, and install path are set by these
-variables in `.env.example` and **must match** the corresponding directives in
-the unit file, since systemd cannot expand `${VAR}` in `User=`, `Group=`,
-`WorkingDirectory=`, or `EnvironmentFile=`:
-
-| Variable        | Default                    | Unit directive it must match     |
-|-----------------|----------------------------|----------------------------------|
-| `SERVICE_USER`  | `gateway`                  | `User=`                          |
-| `SERVICE_GROUP` | `gateway`                  | `Group=`                         |
-| `INSTALL_DIR`   | `/home/gateway/claude-gateway` | `WorkingDirectory=` / `EnvironmentFile=` |
-
-## Running
+## Verification (curl)
 
 ```bash
-# Honors HOST/PORT from .env:
-python3 main.py
-# ...or run uvicorn directly:
-uvicorn main:app --host "$HOST" --port "$PORT"
+K=your-api-key
+# OpenAI non-stream
+curl -s localhost:8000/v1/chat/completions -H "Authorization: Bearer $K" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Say hi"}]}'
+# Anthropic non-stream
+curl -s localhost:8000/v1/messages -H "x-api-key: $K" -H 'Content-Type: application/json' \
+  -d '{"model":"claude-sonnet-4-6","max_tokens":100,"messages":[{"role":"user","content":"Say hi"}]}'
+# Gemini stream (SSE)
+curl -N "localhost:8000/v1beta/models/gemini-1.5-pro:streamGenerateContent?alt=sse" \
+  -H "x-goog-api-key: $K" -H 'Content-Type: application/json' \
+  -d '{"contents":[{"role":"user","parts":[{"text":"count to 3"}]}]}'
 ```
 
-## API
+## Tests
 
-### `POST /chat`
-
-**Headers:**
-```
-X-API-Key: your-api-key
-Content-Type: application/json
-```
-
-**Body:**
-```json
-{ "prompt": "your question here" }
-```
-
-**Response** (SSE stream):
-```
-data: {"status": "streaming", "answer": "Hello"}
-data: {"status": "streaming", "answer": " there!"}
-data: {"status": "done", "answer": null}
-```
-
-On error:
-```
-data: {"status": "error", "answer": "timeout"}
-```
-
-**Example:**
 ```bash
-curl -N -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: your-api-key" \
-  -d '{"prompt": "Explain async/await in one sentence"}'
+pip install -r requirements-dev.txt
+pytest                 # mocked engine — no CLI calls
+RUN_LIVE=1 pytest      # also runs the live contamination smoke test (needs claude)
 ```
 
----
+## Known limitations (honesty)
 
-### `POST /analyze`
-
-Analyze an image or PDF document. Claude reads the file directly (images via multimodal vision, PDFs via text extraction).
-
-**Headers:**
-```
-X-API-Key: your-api-key
-```
-
-**Form fields:**
-| Field          | Required | Description                                          |
-|----------------|----------|------------------------------------------------------|
-| `file`         | Yes      | File upload. Accepted: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.pdf` |
-| `instructions` | No       | What to extract or analyze (defaults to invoice extraction) |
-
-**Response** (SSE stream, same format as `/chat`):
-```
-data: {"status": "streaming", "answer": "Invoice #12345\nVendor: Acme Corp\nTotal: $500.00"}
-data: {"status": "done", "answer": null}
-```
-
-**Example:**
-```bash
-curl -N -X POST http://localhost:8000/analyze \
-  -H "X-API-Key: your-api-key" \
-  -F "file=@invoice.pdf" \
-  -F "instructions=Extract vendor name, invoice number, and total amount."
-```
-
----
-
-### `GET /health`
-
-Returns `{"status": "ok"}`. No auth required.
+The CLI does not expose sampling controls, so `temperature` / `top_p` / `top_k` /
+`stop` / `n>1` / `logprobs` are **accepted but ignored**, and `max_tokens` is not
+strictly enforced. Tool / function calling is accepted but ignored (no error).
+Multi-turn history is replayed as a flattened transcript, and images in prior turns
+are dropped to `[image omitted]` (the final turn's images are sent natively). Usage
+`prompt_tokens` reflects the CLI's accounting.
 
 ## Security
 
-- All tool access is disabled for text prompts (`--tools none`), preventing prompt injection from reading files or executing shell commands.
-- Image analysis uses Claude's built-in vision (no file system access at all — the image is sent as base64 in the request payload).
-- PDF text is extracted by pdfplumber in Python before being passed to Claude, with tools disabled.
-- Each file upload is isolated in a per-request UUID subdirectory under `UPLOAD_DIR` and deleted immediately after the stream completes.
-
-## Scalability notes
-
-- **Concurrency:** The semaphore (`MAX_CONCURRENT`) prevents resource exhaustion under burst traffic. Tune it to your Claude CLI rate limit tier.
-- **Timeout:** Each invocation is killed after `TIMEOUT` seconds, ensuring stuck processes release their semaphore slot.
-- **Horizontal scaling:** Each instance manages its own semaphore. Put a load balancer in front to scale across multiple instances.
+- Constant-time API-key comparison; missing/invalid key → that protocol's 401 envelope.
+- Tools disabled on every call — prompt injection cannot read files or run shell.
+- `MAX_FILE_SIZE` enforced on decoded media before spawning; images sent inline (no disk).
+- Permissive CORS so browser SDKs work; `/health` stays unauthenticated.
 
 ## Roadmap
 
-- [ ] SSH-based remote invocation (swap `invoke_claude` in `main.py`)
-- [ ] Multi-turn conversation sessions
+- [ ] Tool / function calling across all three protocols
+- [ ] Real multi-turn session reuse (`--session-id`) to preserve history images
 - [ ] Per-client rate limiting
