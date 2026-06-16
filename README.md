@@ -1,5 +1,7 @@
 # claude-gateway
 
+[![CI/CD](https://github.com/SamAG8/claude-gateway/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/SamAG8/claude-gateway/actions/workflows/ci-cd.yml)
+
 A multi-protocol, **drop-in model API** backed by the local Claude CLI. Point any
 Anthropic, OpenAI, or Google Gemini SDK at this server by changing only the
 `base_url` — the gateway speaks all three wire protocols and runs `claude` locally
@@ -120,6 +122,18 @@ pip install -r requirements-dev.txt
 pytest                 # mocked engine — no CLI calls
 RUN_LIVE=1 pytest      # also runs the live contamination smoke test (needs claude)
 ```
+
+## Deployment (CI/CD)
+
+Pushing to `main` runs the test suite on GitHub Actions and, when it's green,
+deploys over SSH to your server: pull the new commit, sync deps, restart the
+`claude-gateway` systemd service, and health-check it. The pipeline is
+[`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml); the server-side step
+is [`scripts/deploy.sh`](scripts/deploy.sh).
+
+One-time setup — provisioning the server, generating the deploy SSH key, and
+adding the GitHub secrets (`DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, …) — is
+documented in **[docs/deployment.md](docs/deployment.md)**.
 
 ## Known limitations (honesty)
 
