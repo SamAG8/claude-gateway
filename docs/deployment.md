@@ -30,7 +30,10 @@ the GitHub ↔ server link (an SSH key + a few secrets). After that it's automat
 
 ## Part 1 — One-time server setup
 
-Do this on the server as a sudo-capable user. (Commands shown for Debian/Ubuntu.)
+Do this on the server. Most steps need a **sudo-capable admin user**; steps 3–6
+run *as the unprivileged `gateway` user* (clone/venv/config — no root needed).
+The `gateway` account intentionally **can't** `sudo`, so finish those as `gateway`,
+`exit` back to your admin user, then continue. (Commands shown for Debian/Ubuntu.)
 
 **1. System packages**
 
@@ -44,39 +47,36 @@ sudo apt update && sudo apt install -y python3 python3-venv python3-pip git curl
 sudo useradd --create-home --shell /bin/bash gateway
 ```
 
-**3. Install and authenticate the `claude` CLI _as the `gateway` user_**
+**3–6. Set up the app as the `gateway` user**
 
-The gateway shells out to `claude`, so it must be installed and **logged in** for
-that user — CI/CD never does this for you.
+Switch into the `gateway` account **once** and run all of this *without* `sudo` —
+you're already that user, and it owns everything here. (If a `sudo …` command
+fails with a permission/"can't do that" error, you're still in this shell; `exit`
+first.)
 
 ```bash
-sudo -u gateway -i           # become gateway
-# install the CLI per https://claude.ai/code, then log in:
+sudo -iu gateway             # become gateway — prompt changes to gateway@...
+
+# 3. Install + authenticate the claude CLI. The gateway shells out to it, so it
+#    must be installed and LOGGED IN for this user — CI/CD never does this.
+#    Install per https://claude.ai/code, then:
 claude                       # complete subscription/OAuth login
-# (or, for ISOLATION_MODE=bare, set ANTHROPIC_API_KEY in .env instead)
-exit
-```
+# (or, for ISOLATION_MODE=bare, skip the login and set ANTHROPIC_API_KEY in .env)
 
-**4. Clone the repo at the expected path**
-
-```bash
-sudo -u gateway git clone https://github.com/SamAG8/claude-gateway.git /home/gateway/claude-gateway
-```
-
-**5. Virtualenv + dependencies**
-
-```bash
+# 4. Clone the repo at the path the unit file + scripts expect
+git clone https://github.com/SamAG8/claude-gateway.git /home/gateway/claude-gateway
 cd /home/gateway/claude-gateway
-sudo -u gateway python3 -m venv .venv
-sudo -u gateway .venv/bin/pip install -U pip
-sudo -u gateway .venv/bin/pip install -r requirements.txt
-```
 
-**6. Config — create `.env` and set a strong key**
+# 5. Virtualenv + dependencies
+python3 -m venv .venv
+.venv/bin/pip install -U pip
+.venv/bin/pip install -r requirements.txt
 
-```bash
-sudo -u gateway cp .env.example .env
-sudo -u gateway nano .env        # set API_KEY (required), HOST, PORT, ISOLATION_MODE, ...
+# 6. Config — create .env and set a strong API_KEY
+cp .env.example .env
+nano .env                    # set API_KEY (required), HOST, PORT, ISOLATION_MODE, ...
+
+exit                         # <-- back to your admin (sudo) user for the steps below
 ```
 
 `.env` is gitignored and lives only on the server — CI/CD never touches it.
@@ -84,7 +84,7 @@ sudo -u gateway nano .env        # set API_KEY (required), HOST, PORT, ISOLATION
 **7. Install and start the systemd service** (the unit ships in the repo)
 
 ```bash
-sudo cp claude-gateway.service /etc/systemd/system/claude-gateway.service
+sudo cp /home/gateway/claude-gateway/claude-gateway.service /etc/systemd/system/claude-gateway.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now claude-gateway
 systemctl status claude-gateway --no-pager
