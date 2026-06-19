@@ -54,28 +54,13 @@ def build_argv(req: CanonicalRequest) -> list[str]:
     return argv
 
 
-def _image_to_cli(block: dict) -> dict:
-    """Map an image content block to its CLI `image` base64 source form."""
-    return {
-        "type": "image",
-        "source": {"type": "base64", "media_type": block["media_type"], "data": block["data"]},
-    }
-
-
-def _document_to_cli(block: dict) -> dict:
-    """Map a document content block to its CLI `document` base64 source form."""
-    return {
-        "type": "document",
-        "source": {"type": "base64", "media_type": block["media_type"], "data": block["data"]},
-    }
-
-
 def _media_to_cli(block: dict) -> dict | None:
-    """Map an image/document content block to its CLI source form (None otherwise)."""
-    if block.get("type") == "image":
-        return _image_to_cli(block)
-    if block.get("type") == "document":
-        return _document_to_cli(block)
+    """Map an image/document content block to its CLI base64 source form (None otherwise)."""
+    if block.get("type") in ("image", "document"):
+        return {
+            "type": block["type"],
+            "source": {"type": "base64", "media_type": block["media_type"], "data": block["data"]},
+        }
     return None
 
 

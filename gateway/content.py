@@ -7,16 +7,14 @@ from . import config
 from .errors import GatewayError
 
 
-def normalize_b64(b64: str) -> str:
-    """Validate inbound base64, enforce MAX_FILE_SIZE, and return canonical standard base64.
+def _decode_b64(b64: str) -> bytes:
+    """Decode inbound base64 (standard or URL-safe), enforce MAX_FILE_SIZE, return raw bytes.
 
     The official google-genai SDK encodes inline media with URL-safe base64
-    (``-``/``_`` alphabet); the OpenAI/Anthropic SDKs send standard base64. The
-    Claude CLI (Anthropic API) only accepts standard base64, so we accept either
-    on the way in and always hand the CLI the standard form.
+    (``-``/``_`` alphabet); the OpenAI/Anthropic SDKs send standard base64. We accept
+    either on the way in. Non-string, empty, malformed, or oversize input is rejected
+    as a 4xx GatewayError (never an uncaught 500).
     """
-    if b64 is None:
-        b64 = ""
     if not isinstance(b64, str):
         raise GatewayError(400, "invalid base64 data")
     s = b64.strip().replace("-", "+").replace("_", "/")
@@ -25,9 +23,20 @@ def normalize_b64(b64: str) -> str:
         raw = base64.b64decode(s, validate=True)
     except (binascii.Error, ValueError):
         raise GatewayError(400, "invalid base64 data")
+    if not raw:
+        raise GatewayError(400, "empty base64 data")
     if len(raw) > config.MAX_FILE_SIZE:
         raise GatewayError(413, "file exceeds MAX_FILE_SIZE")
-    return base64.b64encode(raw).decode("ascii")
+    return raw
+
+
+def normalize_b64(b64: str) -> str:
+    """Validate inbound base64 and return canonical standard base64 (what the CLI requires).
+
+    Accepts standard or URL-safe base64 and always hands the CLI the standard form.
+    The Claude CLI (Anthropic API) only accepts standard base64.
+    """
+    return base64.b64encode(_decode_b64(b64)).decode("ascii")
 
 
 def image_block(media_type: str, data: str) -> dict:
@@ -51,10 +60,9 @@ def document_block(media_type: str, data: str) -> dict:
 
 def pdf_to_text_block(data: str) -> dict:
     """Extract PDF text via pdfplumber and inline it as a text block."""
-    data = normalize_b64(data)
+    raw = _decode_b64(data)
     try:
         import pdfplumber
-        raw = base64.b64decode(data)
         with pdfplumber.open(io.BytesIO(raw)) as pdf:
             pages = [p.extract_text() or "" for p in pdf.pages]
         text = "\n\n".join(pages).strip()

@@ -43,10 +43,13 @@ def _to_messages(contents) -> list[CanonicalMessage]:
                 if inline:
                     media_type = inline.get("mime_type") or inline.get("mimeType")
                     data = inline.get("data", "")
-                    if media_type == "application/pdf":
-                        blocks.append(document_block(media_type, data))
+                    mt = (media_type or "").split(";")[0].strip().lower()
+                    if mt == "application/pdf":
+                        blocks.append(document_block(mt, data))
+                    elif mt.startswith("image/"):
+                        blocks.append(image_block(mt, data))
                     else:
-                        blocks.append(image_block(media_type, data))
+                        raise GatewayError(400, f"unsupported inline_data mime type: {media_type!r}")
         out.append(CanonicalMessage(role=to_role(c.get("role"), ("model", "assistant")), blocks=blocks))
     return out
 

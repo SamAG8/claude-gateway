@@ -110,6 +110,16 @@ def test_build_stdin_history_image_becomes_placeholder():
     assert "[image omitted]" in msg["message"]["content"][0]["text"]
 
 
+def test_build_stdin_history_document_becomes_placeholder():
+    req = _req(messages=[
+        CanonicalMessage("user", [{"type": "document", "media_type": "application/pdf", "data": "X"}]),
+        CanonicalMessage("assistant", [{"type": "text", "text": "ok"}]),
+        CanonicalMessage("user", [{"type": "text", "text": "now"}]),
+    ])
+    msg = json.loads(engine.build_stdin(req))
+    assert "[document omitted]" in msg["message"]["content"][0]["text"]
+
+
 # ---- stop reason mapping ------------------------------------------------
 
 @pytest.mark.parametrize("cli,expected", [

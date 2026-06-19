@@ -218,12 +218,45 @@ async def test_gemini_normalizes_urlsafe_base64(client, mock_engine):
 
 
 async def test_gemini_nonstring_inline_data_is_rejected(client, mock_engine):
-    # A non-string inline_data.data must surface as a 400, not crash with an
-    # AttributeError that escapes as a 500.
+    # A non-string inline_data.data must surface as a 400 with the Gemini error
+    # envelope, not crash with an AttributeError that escapes as a 500.
     r = await client.post("/v1beta/models/gemini-1.5-pro:generateContent", headers=AUTH_G, json={
         "contents": [{"role": "user", "parts": [
             {"inline_data": {"mime_type": "image/png", "data": 12345}}]}]})
     assert r.status_code == 400
+    assert r.json() == {
+        "error": {"code": 400, "message": "invalid base64 data", "status": "INVALID_ARGUMENT"}}
+
+
+async def test_gemini_empty_inline_data_is_rejected(client, mock_engine):
+    # Empty data is a clean 400 at the gateway boundary, not an empty media block
+    # forwarded to the CLI.
+    r = await client.post("/v1beta/models/gemini-1.5-pro:generateContent", headers=AUTH_G, json={
+        "contents": [{"role": "user", "parts": [
+            {"inline_data": {"mime_type": "image/png", "data": ""}}]}]})
+    assert r.status_code == 400
+    assert r.json() == {
+        "error": {"code": 400, "message": "empty base64 data", "status": "INVALID_ARGUMENT"}}
+
+
+async def test_gemini_unsupported_inline_data_mime_is_rejected(client, mock_engine):
+    # Non-image, non-PDF inline media is rejected with a 400 instead of becoming a
+    # malformed image block the CLI would reject.
+    r = await client.post("/v1beta/models/gemini-1.5-pro:generateContent", headers=AUTH_G, json={
+        "contents": [{"role": "user", "parts": [
+            {"inline_data": {"mime_type": "audio/mpeg", "data": PNG_B64}}]}]})
+    assert r.status_code == 400
+    assert r.json()["error"]["status"] == "INVALID_ARGUMENT"
+
+
+async def test_gemini_pdf_mime_with_params_routes_to_document(client, mock_engine):
+    # Casing and a charset parameter must not break PDF detection.
+    await client.post("/v1beta/models/gemini-1.5-pro:generateContent", headers=AUTH_G, json={
+        "contents": [{"role": "user", "parts": [
+            {"inline_data": {"mime_type": "Application/PDF; charset=binary", "data": PDF_B64}}]}]})
+    blocks = mock_engine["req"].messages[-1].blocks
+    doc = [b for b in blocks if b["type"] == "document"]
+    assert doc and doc[0]["media_type"] == "application/pdf"
 
 
 async def test_gemini_system_instruction(client, mock_engine):

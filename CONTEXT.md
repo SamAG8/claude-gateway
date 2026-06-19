@@ -28,4 +28,4 @@
 
 **Timeout** — the maximum wall-clock seconds a single Invocation may run before the subprocess is killed and an error event is sent (`TIMEOUT`, default 120).
 
-**Document / Image input** — images are passed inline to the CLI as base64 (native vision); PDFs (Anthropic `document` blocks) are extracted to text via pdfplumber before the call. `MAX_FILE_SIZE` is enforced on decoded bytes.
+**Document / Image input** — images are passed inline to the CLI as base64 (native vision). PDFs are handled two ways: the Gemini surface sends `application/pdf` inline data as a native `document` block (Claude reads it with vision, preserving layout/handwriting/highlights via `document_block`); the Anthropic surface flattens `document` blocks to extracted text via pdfplumber (`pdf_to_text_block`). Inbound base64 may be standard or URL-safe and is normalized to canonical standard base64 (`normalize_b64`); `MAX_FILE_SIZE` is enforced on decoded bytes.
