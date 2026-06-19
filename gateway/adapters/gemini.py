@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 
 from .. import models, protocol
 from ..canonical import CanonicalMessage, CanonicalRequest, Delta, Error, Result, Start, Stop, map_reason
-from ..content import image_block
+from ..content import document_block, image_block
 from ..errors import GatewayError, gemini_error, key_is_valid
 from ..models import resolve_model
 from ..translate import join_texts, to_role
@@ -42,7 +42,11 @@ def _to_messages(contents) -> list[CanonicalMessage]:
                 inline = p.get("inline_data") or p.get("inlineData")
                 if inline:
                     media_type = inline.get("mime_type") or inline.get("mimeType")
-                    blocks.append(image_block(media_type, inline.get("data", "")))
+                    data = inline.get("data", "")
+                    if media_type == "application/pdf":
+                        blocks.append(document_block(media_type, data))
+                    else:
+                        blocks.append(image_block(media_type, data))
         out.append(CanonicalMessage(role=to_role(c.get("role"), ("model", "assistant")), blocks=blocks))
     return out
 

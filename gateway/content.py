@@ -7,26 +7,46 @@ from . import config
 from .errors import GatewayError
 
 
-def check_size(b64: str) -> None:
-    """Validate base64 image/doc data and enforce MAX_FILE_SIZE on decoded bytes."""
+def normalize_b64(b64: str) -> str:
+    """Validate inbound base64, enforce MAX_FILE_SIZE, and return canonical standard base64.
+
+    The official google-genai SDK encodes inline media with URL-safe base64
+    (``-``/``_`` alphabet); the OpenAI/Anthropic SDKs send standard base64. The
+    Claude CLI (Anthropic API) only accepts standard base64, so we accept either
+    on the way in and always hand the CLI the standard form.
+    """
+    s = (b64 or "").strip().replace("-", "+").replace("_", "/")
+    s += "=" * ((-len(s)) % 4)  # tolerate stripped padding
     try:
-        raw = base64.b64decode(b64, validate=True)
+        raw = base64.b64decode(s, validate=True)
     except (binascii.Error, ValueError):
         raise GatewayError(400, "invalid base64 data")
     if len(raw) > config.MAX_FILE_SIZE:
         raise GatewayError(413, "file exceeds MAX_FILE_SIZE")
+    return base64.b64encode(raw).decode("ascii")
 
 
 def image_block(media_type: str, data: str) -> dict:
     if not media_type:
         raise GatewayError(400, "image missing media_type")
-    check_size(data)
-    return {"type": "image", "media_type": media_type, "data": data}
+    return {"type": "image", "media_type": media_type, "data": normalize_b64(data)}
+
+
+def document_block(media_type: str, data: str) -> dict:
+    """A native document (e.g. PDF) block, sent to the CLI as a `document` source.
+
+    Unlike `pdf_to_text_block` (which flattens a PDF to extracted text), this
+    preserves the original bytes so Claude reads the document with vision —
+    keeping layout, handwriting, and highlights intact.
+    """
+    if not media_type:
+        raise GatewayError(400, "document missing media_type")
+    return {"type": "document", "media_type": media_type, "data": normalize_b64(data)}
 
 
 def pdf_to_text_block(data: str) -> dict:
     """Extract PDF text via pdfplumber and inline it as a text block."""
-    check_size(data)
+    data = normalize_b64(data)
     try:
         import pdfplumber
         raw = base64.b64decode(data)
