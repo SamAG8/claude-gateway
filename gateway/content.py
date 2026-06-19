@@ -15,7 +15,11 @@ def normalize_b64(b64: str) -> str:
     Claude CLI (Anthropic API) only accepts standard base64, so we accept either
     on the way in and always hand the CLI the standard form.
     """
-    s = (b64 or "").strip().replace("-", "+").replace("_", "/")
+    if b64 is None:
+        b64 = ""
+    if not isinstance(b64, str):
+        raise GatewayError(400, "invalid base64 data")
+    s = b64.strip().replace("-", "+").replace("_", "/")
     s += "=" * ((-len(s)) % 4)  # tolerate stripped padding
     try:
         raw = base64.b64decode(s, validate=True)
@@ -27,6 +31,7 @@ def normalize_b64(b64: str) -> str:
 
 
 def image_block(media_type: str, data: str) -> dict:
+    """An inline image block (base64 normalized + size-checked) for the CLI's `image` source."""
     if not media_type:
         raise GatewayError(400, "image missing media_type")
     return {"type": "image", "media_type": media_type, "data": normalize_b64(data)}

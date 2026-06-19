@@ -217,6 +217,15 @@ async def test_gemini_normalizes_urlsafe_base64(client, mock_engine):
     assert "-" not in block["data"] and "_" not in block["data"]
 
 
+async def test_gemini_nonstring_inline_data_is_rejected(client, mock_engine):
+    # A non-string inline_data.data must surface as a 400, not crash with an
+    # AttributeError that escapes as a 500.
+    r = await client.post("/v1beta/models/gemini-1.5-pro:generateContent", headers=AUTH_G, json={
+        "contents": [{"role": "user", "parts": [
+            {"inline_data": {"mime_type": "image/png", "data": 12345}}]}]})
+    assert r.status_code == 400
+
+
 async def test_gemini_system_instruction(client, mock_engine):
     await client.post("/v1beta/models/gemini-1.5-pro:generateContent", headers=AUTH_G, json={
         "systemInstruction": {"parts": [{"text": "Be terse."}]},
