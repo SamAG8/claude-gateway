@@ -54,11 +54,14 @@ def build_argv(req: CanonicalRequest) -> list[str]:
     return argv
 
 
-def _image_to_cli(block: dict) -> dict:
-    return {
-        "type": "image",
-        "source": {"type": "base64", "media_type": block["media_type"], "data": block["data"]},
-    }
+def _media_to_cli(block: dict) -> dict | None:
+    """Map an image/document content block to its CLI base64 source form (None otherwise)."""
+    if block.get("type") in ("image", "document"):
+        return {
+            "type": block["type"],
+            "source": {"type": "base64", "media_type": block["media_type"], "data": block["data"]},
+        }
+    return None
 
 
 def _text_of(blocks: list[dict]) -> str:
@@ -73,15 +76,17 @@ def _flatten_turn(blocks: list[dict]) -> str:
             parts.append(b["text"])
         elif b.get("type") == "image":
             parts.append("[image omitted]")
+        elif b.get("type") == "document":
+            parts.append("[document omitted]")
     return " ".join(parts)
 
 
 def build_stdin(req: CanonicalRequest) -> bytes:
     """Build the stream-json user message sent on stdin.
 
-    Single user turn -> sent directly (images preserved as native image blocks).
+    Single user turn -> sent directly (images/documents preserved as native blocks).
     Multi-turn       -> prior turns flattened into a transcript prepended to the
-                        final user text; the final turn's images are preserved.
+                        final user text; the final turn's images/documents are preserved.
     """
     messages = req.messages or []
     final = messages[-1] if messages else None
@@ -92,8 +97,8 @@ def build_stdin(req: CanonicalRequest) -> bytes:
         for b in (final.blocks if final else []):
             if b.get("type") == "text":
                 content.append({"type": "text", "text": b.get("text", "")})
-            elif b.get("type") == "image":
-                content.append(_image_to_cli(b))
+            elif (media := _media_to_cli(b)) is not None:
+                content.append(media)
     else:
         lines = ["[conversation so far]"]
         for m in history:
@@ -107,8 +112,8 @@ def build_stdin(req: CanonicalRequest) -> bytes:
         combined = transcript + (("\n" + final_text) if final_text else "")
         content = [{"type": "text", "text": combined}]
         for b in (final.blocks if final else []):
-            if b.get("type") == "image":
-                content.append(_image_to_cli(b))
+            if (media := _media_to_cli(b)) is not None:
+                content.append(media)
 
     msg = {"type": "user", "message": {"role": "user", "content": content}}
     return (json.dumps(msg) + "\n").encode()

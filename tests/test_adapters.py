@@ -1,4 +1,5 @@
 """Adapter shape/auth/image tests with a mocked engine (no real CLI)."""
+import base64
 import json
 
 import pytest
@@ -9,6 +10,9 @@ from gateway.canonical import Error
 # 1x1 transparent PNG
 PNG_B64 = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQ"
            "AAAABJRU5ErkJggg==")
+
+# Minimal valid base64 (the adapter only validates/decodes; it does not parse the PDF)
+PDF_B64 = "JVBERi0xLjQK"  # "%PDF-1.4\n"
 
 AUTH_A = {"x-api-key": TEST_KEY}
 AUTH_O = {"Authorization": f"Bearer {TEST_KEY}"}
@@ -186,6 +190,73 @@ async def test_gemini_inline_data_reaches_engine(client, mock_engine):
     blocks = mock_engine["req"].messages[-1].blocks
     img = [b for b in blocks if b["type"] == "image"]
     assert img and img[0]["media_type"] == "image/png" and img[0]["data"] == PNG_B64
+
+
+async def test_gemini_pdf_inline_data_becomes_document_block(client, mock_engine):
+    await client.post("/v1beta/models/gemini-1.5-pro:generateContent", headers=AUTH_G, json={
+        "contents": [{"role": "user", "parts": [
+            {"text": "extract this"},
+            {"inline_data": {"mime_type": "application/pdf", "data": PDF_B64}}]}]})
+    blocks = mock_engine["req"].messages[-1].blocks
+    doc = [b for b in blocks if b["type"] == "document"]
+    assert doc and doc[0]["media_type"] == "application/pdf" and doc[0]["data"] == PDF_B64
+    assert not [b for b in blocks if b["type"] == "image"]  # PDF must not become an image
+
+
+async def test_gemini_normalizes_urlsafe_base64(client, mock_engine):
+    # The official google-genai SDK encodes inline bytes with URL-safe base64.
+    raw = b"\xfb\xff\xbf"  # standard base64 of this contains '+' and '/'
+    urlsafe = base64.urlsafe_b64encode(raw).decode()
+    assert "-" in urlsafe or "_" in urlsafe
+    await client.post("/v1beta/models/gemini-1.5-pro:generateContent", headers=AUTH_G, json={
+        "contents": [{"role": "user", "parts": [
+            {"inline_data": {"mime_type": "image/png", "data": urlsafe}}]}]})
+    block = mock_engine["req"].messages[-1].blocks[0]
+    # Stored as canonical standard base64 (what the CLI/Anthropic API requires).
+    assert block["data"] == base64.b64encode(raw).decode()
+    assert "-" not in block["data"] and "_" not in block["data"]
+
+
+async def test_gemini_nonstring_inline_data_is_rejected(client, mock_engine):
+    # A non-string inline_data.data must surface as a 400 with the Gemini error
+    # envelope, not crash with an AttributeError that escapes as a 500.
+    r = await client.post("/v1beta/models/gemini-1.5-pro:generateContent", headers=AUTH_G, json={
+        "contents": [{"role": "user", "parts": [
+            {"inline_data": {"mime_type": "image/png", "data": 12345}}]}]})
+    assert r.status_code == 400
+    assert r.json() == {
+        "error": {"code": 400, "message": "invalid base64 data", "status": "INVALID_ARGUMENT"}}
+
+
+async def test_gemini_empty_inline_data_is_rejected(client, mock_engine):
+    # Empty data is a clean 400 at the gateway boundary, not an empty media block
+    # forwarded to the CLI.
+    r = await client.post("/v1beta/models/gemini-1.5-pro:generateContent", headers=AUTH_G, json={
+        "contents": [{"role": "user", "parts": [
+            {"inline_data": {"mime_type": "image/png", "data": ""}}]}]})
+    assert r.status_code == 400
+    assert r.json() == {
+        "error": {"code": 400, "message": "empty base64 data", "status": "INVALID_ARGUMENT"}}
+
+
+async def test_gemini_unsupported_inline_data_mime_is_rejected(client, mock_engine):
+    # Non-image, non-PDF inline media is rejected with a 400 instead of becoming a
+    # malformed image block the CLI would reject.
+    r = await client.post("/v1beta/models/gemini-1.5-pro:generateContent", headers=AUTH_G, json={
+        "contents": [{"role": "user", "parts": [
+            {"inline_data": {"mime_type": "audio/mpeg", "data": PNG_B64}}]}]})
+    assert r.status_code == 400
+    assert r.json()["error"]["status"] == "INVALID_ARGUMENT"
+
+
+async def test_gemini_pdf_mime_with_params_routes_to_document(client, mock_engine):
+    # Casing and a charset parameter must not break PDF detection.
+    await client.post("/v1beta/models/gemini-1.5-pro:generateContent", headers=AUTH_G, json={
+        "contents": [{"role": "user", "parts": [
+            {"inline_data": {"mime_type": "Application/PDF; charset=binary", "data": PDF_B64}}]}]})
+    blocks = mock_engine["req"].messages[-1].blocks
+    doc = [b for b in blocks if b["type"] == "document"]
+    assert doc and doc[0]["media_type"] == "application/pdf"
 
 
 async def test_gemini_system_instruction(client, mock_engine):

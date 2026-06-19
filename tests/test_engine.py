@@ -70,6 +70,18 @@ def test_build_stdin_single_turn_preserves_image_blocks():
     assert content[1]["source"] == {"type": "base64", "media_type": "image/png", "data": "AAAA"}
 
 
+def test_build_stdin_single_turn_preserves_document_blocks():
+    req = _req(messages=[CanonicalMessage("user", [
+        {"type": "text", "text": "extract this"},
+        {"type": "document", "media_type": "application/pdf", "data": "BBBB"},
+    ])])
+    msg = json.loads(engine.build_stdin(req))
+    content = msg["message"]["content"]
+    assert content[0] == {"type": "text", "text": "extract this"}
+    assert content[1]["type"] == "document"
+    assert content[1]["source"] == {"type": "base64", "media_type": "application/pdf", "data": "BBBB"}
+
+
 def test_build_stdin_multiturn_flattens_history_and_keeps_final_image():
     req = _req(messages=[
         CanonicalMessage("user", [{"type": "text", "text": "first"}]),
@@ -96,6 +108,16 @@ def test_build_stdin_history_image_becomes_placeholder():
     ])
     msg = json.loads(engine.build_stdin(req))
     assert "[image omitted]" in msg["message"]["content"][0]["text"]
+
+
+def test_build_stdin_history_document_becomes_placeholder():
+    req = _req(messages=[
+        CanonicalMessage("user", [{"type": "document", "media_type": "application/pdf", "data": "X"}]),
+        CanonicalMessage("assistant", [{"type": "text", "text": "ok"}]),
+        CanonicalMessage("user", [{"type": "text", "text": "now"}]),
+    ])
+    msg = json.loads(engine.build_stdin(req))
+    assert "[document omitted]" in msg["message"]["content"][0]["text"]
 
 
 # ---- stop reason mapping ------------------------------------------------
