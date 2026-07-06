@@ -31,6 +31,9 @@ class CanonicalRequest:
     top_k: Optional[int] = None
     stop: Optional[list] = None
     tools: Optional[Any] = None
+    # Per-user MCP token (from the x-mcp-token header). When set and MCP is enabled,
+    # the CLI runs with the configured MCP server attached, authenticated as this user.
+    mcp_token: Optional[str] = None
 
 
 # CanonicalEvent: the typed contract the engine yields to every adapter. The four

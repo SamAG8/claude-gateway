@@ -4,7 +4,7 @@ from typing import Iterable
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from .. import protocol
+from .. import config, protocol
 from ..canonical import (
     CanonicalMessage,
     CanonicalRequest,
@@ -107,6 +107,9 @@ async def messages(request: Request):
         req = _build(body)
     except GatewayError as e:
         return anthropic_error(e.status, e.message, e.err_type)
+    # Per-user MCP token (separate from the gateway's own x-api-key door lock).
+    if config.mcp_enabled():
+        req.mcp_token = request.headers.get("x-mcp-token") or None
     return await protocol.respond(req, _Formatter(req))
 
 

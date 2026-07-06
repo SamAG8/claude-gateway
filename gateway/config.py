@@ -39,7 +39,27 @@ MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(10 * 1024 * 1024)))  # 10 MB
 MODELS_FILE = os.getenv("MODELS_FILE", "models.json")
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "").strip()
 
+# Reasoning effort passed to `claude --effort` (low|medium|high|xhigh|max). Empty =
+# use the CLI default. Set EFFORT=high (or xhigh) to give Opus 4.8 a larger thinking
+# budget — e.g. for ConstraBid bid extraction (Claude Gateway V1).
+EFFORT = os.getenv("EFFORT", "").strip()
+
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+# --- MCP connector (per-user company data) ---------------------------------
+# When MCP_SERVER_URL is set, a request carrying a per-user token (the
+# `x-mcp-token` header) runs the CLI with that MCP server attached, scoped to its
+# tools only. This lets a client (e.g. Nimbus) give Claude live access to
+# ConstraAP data without a native tool API — the CLI calls the MCP tools and
+# returns final text. The token is per-request (per user); the URL + tool scope
+# are gateway config. Built-in tools stay disabled, so isolation is preserved.
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "").strip()
+MCP_SERVER_NAME = os.getenv("MCP_SERVER_NAME", "constraap").strip()
+
+
+def mcp_enabled() -> bool:
+    return bool(MCP_SERVER_URL)
+
 
 # Throwaway working dir for the CLI subprocess so no CLAUDE.md / project files leak in.
 CLEAN_CWD = Path(os.getenv("GATEWAY_CLEAN_CWD", "/tmp/claude-gateway-clean"))
