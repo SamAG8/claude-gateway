@@ -35,8 +35,33 @@ def ensure_clean_cwd() -> None:
     config.CLEAN_CWD.mkdir(parents=True, exist_ok=True)
 
 
+def _mcp_config_json(token: str) -> str:
+    """Inline --mcp-config payload attaching the configured MCP server for one user.
+    Passed as a CLI string argument (the CLI accepts JSON files or strings)."""
+    return json.dumps({
+        "mcpServers": {
+            config.MCP_SERVER_NAME: {
+                "type": "http",
+                "url": config.MCP_SERVER_URL,
+                "headers": {"Authorization": f"Bearer {token}"},
+            }
+        }
+    })
+
+
 def build_argv(req: CanonicalRequest) -> list[str]:
-    """Assemble the contamination-neutralized `claude` command line."""
+    """Assemble the contamination-neutralized `claude` command line.
+
+    Built-in tools stay disabled (`--tools ""`). When the request carries a
+    per-user MCP token and MCP is enabled, the CLI is additionally allowed to call
+    that one server's tools — scoped by `--allowedTools mcp__<name>` and
+    `--strict-mcp-config` so no other MCP config or built-in tool leaks in.
+    Isolation is preserved; only the configured company-data server opens up.
+
+    The token rides in the inline --mcp-config JSON (visible in this process's argv
+    on the gateway host — acceptable on the dedicated single-tenant gateway VM;
+    switch to a 0600 temp-file config if that host ever becomes multi-tenant).
+    """
     argv = [
         "claude", "-p",
         "--model", req.model,
@@ -45,10 +70,19 @@ def build_argv(req: CanonicalRequest) -> list[str]:
         "--verbose",
         "--include-partial-messages",
         "--no-session-persistence",
-        "--tools", "",            # empty string = disable ALL tools (NOT the word "none")
+        "--tools", "",            # empty string = disable ALL built-in tools (NOT the word "none")
         "--setting-sources", "",  # do not load user/project/local settings (where hooks live)
         "--system-prompt", req.system or config.DEFAULT_SYSTEM_PROMPT,
     ]
+    if config.mcp_enabled() and req.mcp_token:
+        argv += [
+            "--mcp-config", _mcp_config_json(req.mcp_token),
+            "--strict-mcp-config",  # ignore all other MCP configs on the machine
+            "--allowedTools", f"mcp__{config.MCP_SERVER_NAME}",
+            "--permission-mode", "bypassPermissions",  # safe: only this MCP server is reachable
+        ]
+    if config.EFFORT:
+        argv += ["--effort", config.EFFORT]
     if config.ISOLATION_MODE == "bare":
         argv.append("--bare")
     return argv

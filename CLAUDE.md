@@ -52,7 +52,8 @@ adapter (protocol request → CanonicalRequest)
 - **Contamination neutralization.** The engine must keep the gateway behaving like a clean model API, not the machine's coding assistant. Every invocation passes `--system-prompt` (client system or a default), `--setting-sources ""` (no user/project/local settings or `SessionStart` hooks), `--tools ""` (the empty string — **not** the word `none`, which the CLI parses as a tool name), `--no-session-persistence`, and runs in a throwaway `cwd` with no `CLAUDE.md`. `ISOLATION_MODE=bare` swaps to `--bare` (which then requires `ANTHROPIC_API_KEY`). The live smoke test asserts this: a trivial prompt returns small `input_tokens` with no leaked memory.
 - **Parsing the CLI stream.** Consume `stream_event.event` payloads (they are 1:1 with Anthropic's wire events): `message_start`→`start`, `content_block_delta`(`text_delta`)→`delta`, `message_delta`→capture stop_reason/output_tokens, final `result`→`stop` (or `error` if `is_error`/`subtype!=success`). Ignore `system`, `assistant`, `rate_limit_event`, and hook lines.
 - **Stateless multi-turn.** The CLI call is stateless; multi-turn requests flatten prior turns into a transcript prepended to the final user message. Only the **final** turn's images are sent natively — history images become `[image omitted]`.
-- **Accept-but-ignore.** `temperature`/`top_p`/`top_k`/`stop`/`max_tokens`/tools are accepted and never error, but the CLI cannot enforce them. Don't invent CLI flags for them.
+- **Accept-but-ignore.** `temperature`/`top_p`/`top_k`/`stop`/`max_tokens` and the native `tools` param are accepted and never error, but the CLI cannot enforce them. Don't invent CLI flags for them. (MCP tools are the exception — see MCP connector below — they are wired via `--mcp-config`, not the native `tools` param.)
+- **MCP connector (per-user).** When `MCP_SERVER_URL` is set and a request carries an `x-mcp-token` header, `build_argv` attaches that one remote MCP server via inline `--mcp-config`, scoped with `--strict-mcp-config` + `--allowedTools mcp__<name>` + `--permission-mode bypassPermissions`. Built-in tools stay disabled, so isolation holds; only the configured company-data server opens up, authenticated as the token's user. The token is per-request; the URL/name are gateway config. This is how a client (e.g. Nimbus) gives Claude live company-data access without a native tool API — the CLI calls the MCP tools and returns final text. Native API tool_use / function-calling *passthrough* (handing tool calls back to the API caller) is still not supported — client-side actions must be brokered by the caller.
 
 ## Testing approach
 
@@ -64,7 +65,7 @@ Adapter and engine tests **mock, never call the real CLI**:
 
 - Config is module-level constants in `gateway/config.py`, read once from env at import (see `.env.example`). Auth accepts `API_KEY` plus optional comma-separated `API_KEYS`.
 - `CONTEXT.md` holds the project glossary (Adapter, Canonical Request/Event, Engine, Isolation Mode, Model Map) — keep it in sync when these concepts change.
-- Scope is deliberately bounded: no tool/function calling, embeddings, audio, image-gen, batch, or multi-tenant key management (see README "Known limitations" and the issue's non-goals).
+- Scope is deliberately bounded: no native tool_use/function-calling *passthrough* (per-user MCP servers via `--mcp-config` ARE supported — see MCP connector above), no embeddings, audio, image-gen, batch, or multi-tenant key management (see README "Known limitations" and the issue's non-goals).
 
 ## Agent skills
 
