@@ -35,6 +35,13 @@ HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(10 * 1024 * 1024)))  # 10 MB
 
+# Max bytes for a single stream-json line read from the `claude` CLI (the asyncio
+# StreamReader limit). The default 64 KiB is far too small: with --verbose the CLI
+# echoes the user message — inline base64 media included — as one NDJSON line, so a
+# request with an image overruns and the read fails (issue #11). The engine
+# additionally scales this up to the actual stdin payload per request.
+STREAM_LIMIT = int(os.getenv("STREAM_LIMIT", str(32 * 1024 * 1024)))  # 32 MiB
+
 # Editable model map (hot-reloaded by mtime). DEFAULT_MODEL overrides its "default" when set.
 MODELS_FILE = os.getenv("MODELS_FILE", "models.json")
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "").strip()

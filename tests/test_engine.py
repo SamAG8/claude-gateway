@@ -1,5 +1,6 @@
 """Engine tests: argv build, stdin build, stream parsing, error/timeout handling."""
 import json
+import sys
 
 import pytest
 
@@ -14,7 +15,7 @@ from gateway.canonical import (
     map_stop_reason,
 )
 
-from conftest import ERROR_LINES
+from conftest import ERROR_LINES, SUCCESS_LINES, _line
 
 
 def _req(**kw):
@@ -176,3 +177,41 @@ async def test_bare_mode_requires_anthropic_key(fake_claude, monkeypatch):
     events = await _drain(_req())
     assert events == [Error(500,
                             "ISOLATION_MODE=bare requires ANTHROPIC_API_KEY in the environment")]
+
+
+# ---- stream line limit (issue #11) --------------------------------------
+
+async def test_run_claude_survives_stream_lines_over_64kib(tmp_path, monkeypatch):
+    """A >64 KiB NDJSON line (the CLI echoing an inline image) must not error.
+
+    Uses a REAL subprocess so the real asyncio StreamReader limit is exercised —
+    the fake_claude fixture bypasses it entirely. Pre-fix this fails with
+    Error(500, 'Separator is found, but chunk is longer than limit').
+    """
+    big_echo = _line({"type": "user", "message": {
+        "role": "user", "content": [{"type": "text", "text": "x" * 300_000}]}})
+    transcript = tmp_path / "transcript.ndjson"
+    transcript.write_bytes(SUCCESS_LINES[0] + big_echo + b"".join(SUCCESS_LINES[1:]))
+    feeder = (
+        "import sys\n"
+        "sys.stdin.buffer.read()\n"  # drain the gateway's stdin write
+        f"sys.stdout.buffer.write(open({str(transcript)!r}, 'rb').read())\n"
+    )
+    monkeypatch.setattr(engine, "build_argv", lambda req: [sys.executable, "-c", feeder])
+    events = await _drain(_req())
+    assert not any(isinstance(e, Error) for e in events)
+    assert events[0] == Start(model="claude-sonnet-4-6", input_tokens=136)
+    assert events[-1] == Stop(stop_reason="end_turn", output_tokens=5, input_tokens=136)
+
+
+async def test_spawn_sets_stream_limit(fake_claude):
+    await _drain(_req())
+    assert fake_claude["kwargs"]["limit"] >= 32 * 1024 * 1024
+
+
+async def test_spawn_limit_scales_with_stdin(fake_claude, monkeypatch):
+    monkeypatch.setattr(config, "STREAM_LIMIT", 1024)
+    req = _req(messages=[CanonicalMessage("user", [
+        {"type": "image", "media_type": "image/jpeg", "data": "A" * 100_000}])])
+    await _drain(req)
+    assert fake_claude["kwargs"]["limit"] == 2 * len(engine.build_stdin(req))

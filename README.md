@@ -95,6 +95,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 | `TIMEOUT` | `120` | Per-invocation seconds before the subprocess is killed (→ 504). |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address / port (read by `python3 main.py`). |
 | `MAX_FILE_SIZE` | `10485760` | Max decoded image/document bytes (→ 413). |
+| `STREAM_LIMIT` | `33554432` | Max bytes per CLI stream-json line (asyncio StreamReader limit); auto-scales to 2× the stdin payload. Overrun → 502. |
 | `MODELS_FILE` | `models.json` | Model-map path (hot-reloaded by mtime). |
 | `DEFAULT_MODEL` | — | Overrides the map's `default` when set. |
 

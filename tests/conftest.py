@@ -96,10 +96,12 @@ def fake_claude(monkeypatch):
     Set ``holder['lines']`` before triggering run_claude to choose the transcript.
     ``holder['proc']`` exposes the spawned FakeProcess (e.g. to read stdin).
     """
-    holder = {"lines": SUCCESS_LINES, "stderr": [], "proc": None, "argv": None}
+    holder = {"lines": SUCCESS_LINES, "stderr": [], "proc": None, "argv": None,
+              "kwargs": None}
 
     async def fake_exec(*args, **kwargs):
         holder["argv"] = list(args)
+        holder["kwargs"] = kwargs
         proc = FakeProcess(holder["lines"], holder["stderr"])
         holder["proc"] = proc
         return proc
