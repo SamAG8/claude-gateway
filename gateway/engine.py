@@ -5,6 +5,7 @@ Streaming adapters consume the events live; non-streaming adapters drain them.
 """
 import asyncio
 import json
+import logging
 from typing import AsyncIterator
 
 from . import config
@@ -19,7 +20,17 @@ from .canonical import (
     map_stop_reason,
 )
 
+logger = logging.getLogger("claude-gateway.engine")
+
 _semaphore: asyncio.Semaphore | None = None
+
+
+def _log_outcome(outcome: str, req: CanonicalRequest, elapsed: float,
+                 in_tok: int | None = None, out_tok: int | None = None,
+                 level: int = logging.INFO) -> None:
+    """One line per invocation so errors and durations are visible in journald."""
+    logger.log(level, "run_claude %s model=%s elapsed=%.1fs in=%s out=%s",
+               outcome, req.model, elapsed, in_tok, out_tok)
 
 
 def _get_semaphore() -> asyncio.Semaphore:
@@ -163,6 +174,13 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
     argv = build_argv(req)
     stdin_data = build_stdin(req)
 
+    # StreamReader line limit for the CLI's stdout/stderr. With --verbose the CLI
+    # echoes the user message (inline base64 media included) as one NDJSON line, so
+    # the limit must clear the payload we just sent. Scale to the actual stdin size
+    # (2x for re-serialization slack) with a generous floor for other chatter — a
+    # fixed cap would break multi-image requests (issue #11).
+    stream_limit = max(config.STREAM_LIMIT, 2 * len(stdin_data))
+
     async with _get_semaphore():
         try:
             process = await asyncio.create_subprocess_exec(
@@ -171,6 +189,7 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(config.CLEAN_CWD),
+                limit=stream_limit,
             )
         except FileNotFoundError:
             yield Error(500, "claude CLI not found on PATH")
@@ -196,6 +215,7 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                 if remaining <= 0:
                     process.kill()
                     await process.wait()
+                    _log_outcome("timeout", req, loop.time() - start, level=logging.WARNING)
                     yield Error(504, "upstream timeout")
                     return
                 try:
@@ -203,7 +223,27 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.wait()
+                    _log_outcome("timeout", req, loop.time() - start, level=logging.WARNING)
                     yield Error(504, "upstream timeout")
+                    return
+                except (ValueError, asyncio.LimitOverrunError) as e:
+                    # readline() re-raises LimitOverrunError as ValueError when one
+                    # stream-json line exceeds the reader limit (issue #11). The line
+                    # length isn't recoverable from the exception, so log the limit.
+                    process.kill()
+                    await process.wait()
+                    tail = b""
+                    try:
+                        tail = await process.stderr.read()
+                    except Exception:
+                        pass
+                    logger.error(
+                        "stream line exceeded limit=%d after %.1fs model=%s: %s; stderr tail: %s",
+                        stream_limit, loop.time() - start, req.model, e,
+                        tail.decode("utf-8", errors="replace").strip()[-500:],
+                    )
+                    yield Error(502, f"upstream stream line exceeded gateway limit "
+                                     f"({stream_limit} bytes); raise STREAM_LIMIT if legitimate")
                     return
 
                 if not line:
@@ -235,16 +275,20 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                             cap_out = u["output_tokens"]
                 elif otype == "result":
                     if obj.get("is_error") or obj.get("subtype") != "success":
-                        yield Error(502, obj.get("result") or "upstream error")
                         await process.wait()
+                        _log_outcome("error", req, loop.time() - start, level=logging.WARNING)
+                        yield Error(502, obj.get("result") or "upstream error")
                         return
                     usage = obj.get("usage", {})
+                    in_tok = usage.get("input_tokens", cap_in or 0)
+                    out_tok = usage.get("output_tokens", cap_out or 0)
+                    await process.wait()
+                    _log_outcome("success", req, loop.time() - start, in_tok, out_tok)
                     yield Stop(
                         stop_reason=map_stop_reason(obj.get("stop_reason") or cap_stop),
-                        output_tokens=usage.get("output_tokens", cap_out or 0),
-                        input_tokens=usage.get("input_tokens", cap_in or 0),
+                        output_tokens=out_tok,
+                        input_tokens=in_tok,
                     )
-                    await process.wait()
                     return
                 # ignore: system, assistant, rate_limit_event, hook/status lines
 
@@ -257,8 +301,10 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                 except Exception:
                     pass
                 msg = err.decode("utf-8", errors="replace").strip()[:500]
+                _log_outcome("no-output", req, loop.time() - start, level=logging.WARNING)
                 yield Error(502, msg or "no output from claude")
             else:
+                _log_outcome("success", req, loop.time() - start, cap_in or 0, cap_out or 0)
                 yield Stop(stop_reason=map_stop_reason(cap_stop),
                            output_tokens=cap_out or 0, input_tokens=cap_in or 0)
         except Exception as e:  # noqa: BLE001 - surface any spawn/read failure as an error event
@@ -267,6 +313,7 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                 await process.wait()
             except Exception:
                 pass
+            _log_outcome("exception", req, loop.time() - start, level=logging.ERROR)
             yield Error(500, str(e))
 
 
