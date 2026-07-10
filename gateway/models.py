@@ -56,6 +56,20 @@ def resolve_model(requested: str) -> str:
     return _default_model(data)
 
 
+def resolve_effort(resolved_model: str) -> str | None:
+    """Effort for a resolved --model, or None to use the CLI default.
+
+    Precedence: a per-model entry in the models file's ``effort`` map wins; else
+    the global ``EFFORT`` env applies to every model. This lets the fast tier
+    (haiku) run at low effort for latency-sensitive extraction while heavier
+    models (opus, used by ConstraBid) keep the global setting — no cross-impact.
+    """
+    per_model = _load().get("effort", {})
+    if resolved_model in per_model:
+        return per_model[resolved_model] or None
+    return config.EFFORT or None
+
+
 def list_model_ids() -> list[str]:
     """Advertised model ids: every alias key plus the canonical Claude aliases."""
     data = _load()

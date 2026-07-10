@@ -8,7 +8,7 @@ import json
 import logging
 from typing import AsyncIterator
 
-from . import config
+from . import config, models
 from .canonical import (
     CanonicalEvent,
     CanonicalRequest,
@@ -92,8 +92,9 @@ def build_argv(req: CanonicalRequest) -> list[str]:
             "--allowedTools", f"mcp__{config.MCP_SERVER_NAME}",
             "--permission-mode", "bypassPermissions",  # safe: only this MCP server is reachable
         ]
-    if config.EFFORT:
-        argv += ["--effort", config.EFFORT]
+    effort = models.resolve_effort(req.model)
+    if effort:
+        argv += ["--effort", effort]
     if config.ISOLATION_MODE == "bare":
         argv.append("--bare")
     return argv
