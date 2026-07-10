@@ -29,8 +29,14 @@ jobs:
   deploy:
     name: Deploy to server
     needs: test
-    # Never deploy on PRs or non-main branches — only real pushes to main.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # DISABLED 2026-07-10: this job deployed to DEPLOY_HOST, which is NOT the
+    # gateway that actually serves ConstraAP/Nimbus/ConstraBid (127.0.0.1:8000 on
+    # constraap-server). It silently no-op'd the serving instance for ~6 weeks.
+    # The gateway is now vendored into the ConstraAP repo and deployed via that
+    # repo's pipeline: `./scripts/deploy-to-production.sh --gateway`. Tests still
+    # run on every push/PR (the `test` job above). Re-enable only if this repo
+    # regains a real deploy target. Was: `github.event_name == 'push' && ...main`.
+    if: false
     runs-on: ubuntu-latest
     # Optional: create a "production" Environment in repo settings to scope the
     # deploy secrets and/or require a manual approval before this job runs.
