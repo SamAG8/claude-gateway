@@ -57,6 +57,24 @@ def test_build_argv_custom_system_prompt():
     assert argv[sp + 1] == "Be terse."
 
 
+def test_build_argv_haiku_uses_low_effort(monkeypatch):
+    # Fast tier stays at low effort even when the global EFFORT is high (issue #11).
+    monkeypatch.setattr(config, "EFFORT", "high")
+    argv = engine.build_argv(_req(model="haiku"))
+    assert argv[argv.index("--effort") + 1] == "low"
+
+
+def test_build_argv_non_haiku_uses_global_effort(monkeypatch):
+    monkeypatch.setattr(config, "EFFORT", "high")
+    argv = engine.build_argv(_req(model="opus"))
+    assert argv[argv.index("--effort") + 1] == "high"
+
+
+def test_build_argv_no_effort_when_global_unset(monkeypatch):
+    monkeypatch.setattr(config, "EFFORT", "")
+    assert "--effort" not in engine.build_argv(_req(model="opus"))
+
+
 # ---- stdin --------------------------------------------------------------
 
 def test_build_stdin_single_turn_preserves_image_blocks():

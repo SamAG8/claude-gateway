@@ -72,3 +72,42 @@ def test_gemini_payload_shape(models_file):
     payload = models.gemini_models_payload()
     assert all(m["name"].startswith("models/") for m in payload["models"])
     assert all("generateContent" in m["supportedGenerationMethods"] for m in payload["models"])
+
+
+# ---- per-model effort (models.json "effort" map) ------------------------
+
+@pytest.fixture
+def effort_models_file(tmp_path, monkeypatch):
+    path = tmp_path / "models.json"
+    path.write_text(json.dumps({
+        "default": "sonnet",
+        "aliases": {"gemini-3.1-flash-lite": "haiku"},
+        "effort": {"haiku": "low"},
+        "passthrough_prefixes": ["claude-"],
+    }))
+    monkeypatch.setattr(config, "MODELS_FILE", str(path))
+    models._cache.update(mtime=None, path=None, data=None)
+    return path
+
+
+def test_effort_per_model_overrides_global(effort_models_file, monkeypatch):
+    monkeypatch.setattr(config, "EFFORT", "high")
+    assert models.resolve_effort("haiku") == "low"   # per-model wins
+    assert models.resolve_effort("opus") == "high"   # others keep the global
+
+
+def test_effort_none_when_unset(effort_models_file, monkeypatch):
+    monkeypatch.setattr(config, "EFFORT", "")
+    assert models.resolve_effort("opus") is None      # CLI default
+    assert models.resolve_effort("haiku") == "low"    # still overridden
+
+
+def test_real_config_routes_fast_tier_to_haiku():
+    """The shipped models.json routes the ConstraAP fast tier to haiku at low effort
+    while the complex (pro) path stays on opus — issue #11 latency follow-up."""
+    from pathlib import Path
+    data = json.loads(Path("models.json").read_text())
+    assert data["aliases"]["gemini-3.1-flash-lite"] == "haiku"
+    assert data["aliases"]["gemini-3.1-flash"] == "haiku"
+    assert data["effort"]["haiku"] == "low"
+    assert data["aliases"]["gemini-3.1-pro-preview"] == "opus"

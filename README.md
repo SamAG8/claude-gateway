@@ -74,6 +74,11 @@ The client's model string is resolved to a real `claude --model` value via
 2. Otherwise a known alias (e.g. `gpt-4o → sonnet`, `gemini-1.5-pro → opus`) maps to a tier.
 3. Otherwise it falls back to the default. **Unknown models never error.**
 
+An optional `"effort"` map in `models.json` sets reasoning effort per resolved
+model (e.g. `{"haiku": "low"}`) — this wins over the global `EFFORT` env, so a
+latency-sensitive fast tier can run at low effort while heavier models keep the
+global setting. Models with no entry fall back to `EFFORT` (then the CLI default).
+
 ## Setup
 
 **Requirements:** Python 3.14, the [Claude CLI](https://claude.ai/code) installed and authenticated.
