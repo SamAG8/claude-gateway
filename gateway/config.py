@@ -68,6 +68,23 @@ def mcp_enabled() -> bool:
     return bool(MCP_SERVER_URL)
 
 
+# --- Per-user PAT auth (login is the single credential) --------------------
+# When TOKEN_INTROSPECT_URL is set, a request may authenticate with the user's own
+# ConstraAP PAT (cap_…) instead of the shared API_KEY: the gateway POSTs the token
+# to this endpoint and accepts it iff {"active": true}. The validated PAT is then
+# reused as the per-user MCP token, so company data is scoped to that user for
+# free. INTROSPECT_SECRET (if set) is sent as x-introspect-secret so the endpoint
+# isn't an open oracle. The shared API_KEY still works as a dev/local fallback.
+TOKEN_INTROSPECT_URL = os.getenv("TOKEN_INTROSPECT_URL", "").strip()
+INTROSPECT_SECRET = os.getenv("INTROSPECT_SECRET", "").strip()
+INTROSPECT_CACHE_TTL = int(os.getenv("INTROSPECT_CACHE_TTL", "60"))
+INTROSPECT_TIMEOUT = int(os.getenv("INTROSPECT_TIMEOUT", "8"))
+
+
+def pat_auth_enabled() -> bool:
+    return bool(TOKEN_INTROSPECT_URL)
+
+
 # Throwaway working dir for the CLI subprocess so no CLAUDE.md / project files leak in.
 CLEAN_CWD = Path(os.getenv("GATEWAY_CLEAN_CWD", "/tmp/claude-gateway-clean"))
 

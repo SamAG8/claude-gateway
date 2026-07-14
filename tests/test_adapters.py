@@ -57,6 +57,52 @@ async def test_anthropic_auth_401(client, mock_engine):
     assert r.json()["error"]["type"] == "authentication_error"
 
 
+async def test_anthropic_pat_auth_accepted(client, mock_engine, monkeypatch):
+    """A valid per-user PAT (not the shared key) opens the door via introspection."""
+    from gateway import config, introspect
+
+    monkeypatch.setattr(config, "TOKEN_INTROSPECT_URL", "http://introspect.test")
+
+    async def fake_active(tok):
+        return tok == "cap_good"
+
+    monkeypatch.setattr(introspect, "token_is_active", fake_active)
+    r = await client.post("/v1/messages", headers={"x-api-key": "cap_good"}, json={
+        "model": "x", "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200
+
+
+async def test_anthropic_pat_auth_rejected(client, mock_engine, monkeypatch):
+    """An unknown token is rejected when it matches neither the shared key nor a live PAT."""
+    from gateway import config, introspect
+
+    monkeypatch.setattr(config, "TOKEN_INTROSPECT_URL", "http://introspect.test")
+
+    async def fake_active(tok):
+        return False
+
+    monkeypatch.setattr(introspect, "token_is_active", fake_active)
+    r = await client.post("/v1/messages", headers={"x-api-key": "cap_bogus"}, json={
+        "model": "x", "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 401
+
+
+async def test_anthropic_pat_becomes_mcp_token(client, mock_engine, monkeypatch):
+    """The PAT we authenticated with doubles as the per-user MCP token."""
+    from gateway import config, introspect
+
+    monkeypatch.setattr(config, "TOKEN_INTROSPECT_URL", "http://introspect.test")
+    monkeypatch.setattr(config, "MCP_SERVER_URL", "http://mcp.test")  # mcp_enabled()
+
+    async def fake_active(tok):
+        return tok == "cap_good"
+
+    monkeypatch.setattr(introspect, "token_is_active", fake_active)
+    await client.post("/v1/messages", headers={"x-api-key": "cap_good"}, json={
+        "model": "x", "messages": [{"role": "user", "content": "hi"}]})
+    assert mock_engine["req"].mcp_token == "cap_good"
+
+
 async def test_anthropic_image_reaches_engine(client, mock_engine):
     await client.post("/v1/messages", headers=AUTH_A, json={
         "model": "claude-sonnet-4-6", "max_tokens": 50, "messages": [{
