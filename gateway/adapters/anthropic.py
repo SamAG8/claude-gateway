@@ -4,7 +4,7 @@ from typing import Iterable
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from .. import config, protocol
+from .. import config, introspect, protocol
 from ..canonical import (
     CanonicalMessage,
     CanonicalRequest,
@@ -88,17 +88,26 @@ def _build(body: dict) -> CanonicalRequest:
     )
 
 
-def _unauthorized(request: Request) -> JSONResponse | None:
+async def _authenticate(request: Request) -> tuple[JSONResponse | None, str | None]:
+    """Authorize the request. Returns (error_response, validated_pat).
+
+    Two doors: the shared static API_KEY (dev/local fallback) OR the user's own
+    ConstraAP PAT, validated via introspection. When the PAT door is used, the PAT
+    itself is returned so it can double as the per-user MCP token.
+    """
     key = request.headers.get("x-api-key") or bearer_token(request)
-    if not key_is_valid(key):
-        return anthropic_error(401, "invalid x-api-key", "authentication_error")
-    return None
+    if key_is_valid(key):
+        return None, None  # shared secret: authorized, no per-user identity
+    if config.pat_auth_enabled() and await introspect.token_is_active(key):
+        return None, key  # valid PAT: authorized as this user
+    return anthropic_error(401, "invalid credentials", "authentication_error"), None
 
 
 @router.post("/v1/messages")
 async def messages(request: Request):
-    if (resp := _unauthorized(request)) is not None:
-        return resp
+    err, pat = await _authenticate(request)
+    if err is not None:
+        return err
     try:
         body = await request.json()
     except Exception:
@@ -107,9 +116,11 @@ async def messages(request: Request):
         req = _build(body)
     except GatewayError as e:
         return anthropic_error(e.status, e.message, e.err_type)
-    # Per-user MCP token (separate from the gateway's own x-api-key door lock).
+    # Per-user MCP token: an explicit x-mcp-token header wins; otherwise the PAT we
+    # authenticated with doubles as the MCP identity, so company data is scoped to
+    # this user with no extra credential.
     if config.mcp_enabled():
-        req.mcp_token = request.headers.get("x-mcp-token") or None
+        req.mcp_token = request.headers.get("x-mcp-token") or pat or None
     return await protocol.respond(req, _Formatter(req))
 
 
