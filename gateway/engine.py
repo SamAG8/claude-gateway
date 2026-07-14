@@ -60,14 +60,25 @@ def _mcp_config_json(token: str) -> str:
     })
 
 
+# Every built-in `claude` tool, hard-denied when an MCP server is attached so the
+# model can reach ONLY the MCP server's tools (not Bash/Read/Write on the gateway
+# host). --disallowedTools overrides --permission-mode bypassPermissions. Keep this
+# list in sync if the CLI gains new built-ins.
+_BUILTIN_TOOLS = (
+    "Task,Bash,BashOutput,KillShell,KillBash,Glob,Grep,Read,Edit,Write,"
+    "MultiEdit,NotebookEdit,NotebookRead,WebFetch,WebSearch,TodoWrite,"
+    "SlashCommand,ExitPlanMode,ListMcpResources,ReadMcpResource"
+)
+
+
 def build_argv(req: CanonicalRequest) -> list[str]:
     """Assemble the contamination-neutralized `claude` command line.
 
-    Built-in tools stay disabled (`--tools ""`). When the request carries a
-    per-user MCP token and MCP is enabled, the CLI is additionally allowed to call
-    that one server's tools — scoped by `--allowedTools mcp__<name>` and
-    `--strict-mcp-config` so no other MCP config or built-in tool leaks in.
-    Isolation is preserved; only the configured company-data server opens up.
+    Plain chat runs with `--tools ""` (no tools). When a per-user MCP token is
+    present and MCP is enabled, we run `--tools default` (the only value that
+    surfaces MCP tools) but hard-deny every built-in via `--disallowedTools`, so
+    only the one configured company-data server's tools are reachable and no
+    built-in tool (Bash/Read/Write) can touch the gateway host.
 
     The token rides in the inline --mcp-config JSON (visible in this process's argv
     on the gateway host — acceptable on the dedicated single-tenant gateway VM;
@@ -81,17 +92,26 @@ def build_argv(req: CanonicalRequest) -> list[str]:
         "--verbose",
         "--include-partial-messages",
         "--no-session-persistence",
-        "--tools", "",            # empty string = disable ALL built-in tools (NOT the word "none")
         "--setting-sources", "",  # do not load user/project/local settings (where hooks live)
         "--system-prompt", req.system or config.DEFAULT_SYSTEM_PROMPT,
     ]
     if config.mcp_enabled() and req.mcp_token:
+        # `--tools default` is the ONLY value that surfaces MCP tools to the model:
+        # "" (the previous value) strips MCP tools too, and specific/MCP names are
+        # treated as built-in names (MCP excluded). "default" also enables built-ins,
+        # so we hard-deny every built-in via --disallowedTools (which overrides
+        # bypassPermissions), leaving ONLY this MCP server's tools reachable. This is
+        # what actually keeps the gateway host isolated (Bash/Read/Write can't run).
         argv += [
             "--mcp-config", _mcp_config_json(req.mcp_token),
             "--strict-mcp-config",  # ignore all other MCP configs on the machine
+            "--tools", "default",
+            "--disallowedTools", _BUILTIN_TOOLS,  # host isolation (overrides bypass)
             "--allowedTools", f"mcp__{config.MCP_SERVER_NAME}",
-            "--permission-mode", "bypassPermissions",  # safe: only this MCP server is reachable
+            "--permission-mode", "bypassPermissions",  # safe: built-ins are hard-denied
         ]
+    else:
+        argv += ["--tools", ""]  # plain chat: no tools at all
     effort = models.resolve_effort(req.model)
     if effort:
         argv += ["--effort", effort]

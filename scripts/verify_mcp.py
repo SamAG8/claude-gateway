@@ -51,7 +51,11 @@ check("token present → --mcp-config added", "--mcp-config" in argv)
 check("--strict-mcp-config added", "--strict-mcp-config" in argv)
 check("allowedTools scoped to the one server", "mcp__constraap" in argv)
 check("permission mode set for non-interactive run", "bypassPermissions" in argv)
-check("built-in tools STILL disabled (isolation preserved)", argv[argv.index("--tools") + 1] == "")
+# MCP tools only surface under `--tools default`; isolation is then enforced by
+# hard-denying every built-in via --disallowedTools (overrides bypassPermissions).
+check("MCP enabled → --tools default (surfaces MCP tools)", argv[argv.index("--tools") + 1] == "default")
+check("built-in tools hard-denied (isolation preserved)",
+      "--disallowedTools" in argv and "Bash" in argv[argv.index("--disallowedTools") + 1])
 
 cfg = json.loads(argv[argv.index("--mcp-config") + 1])
 srv = cfg["mcpServers"]["constraap"]
