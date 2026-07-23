@@ -86,6 +86,18 @@ def resolve_max_thinking_tokens(resolved_model: str) -> int | None:
     return config.MAX_THINKING_TOKENS
 
 
+def is_fast_model(resolved_model: str) -> bool:
+    """True if a resolved --model belongs to the latency-sensitive fast tier.
+
+    Reads the models file's ``fast_models`` list (hot-reloaded, like resolve_effort /
+    resolve_max_thinking_tokens), defaulting to ``["haiku"]`` when absent. The engine
+    uses this to pick the fast semaphore lane so interactive calls don't queue behind
+    long heavy extraction jobs; every non-fast model uses the heavy lane.
+    """
+    fast = _load().get("fast_models", ["haiku"])
+    return resolved_model in fast
+
+
 def list_model_ids() -> list[str]:
     """Advertised model ids: every alias key plus the canonical Claude aliases."""
     data = _load()
