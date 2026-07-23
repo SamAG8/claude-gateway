@@ -46,6 +46,11 @@ STREAM_LIMIT = int(os.getenv("STREAM_LIMIT", str(32 * 1024 * 1024)))  # 32 MiB
 MODELS_FILE = os.getenv("MODELS_FILE", "models.json")
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "").strip()
 
+# Structured per-invocation usage log (one JSON line per call): tokens, cache
+# hits, media counts, elapsed, reference cost. Empty = disabled (the engine still
+# writes its human-readable line to journald). Aggregate with scripts/usage_report.py.
+USAGE_LOG = os.getenv("USAGE_LOG", "").strip()
+
 # Reasoning effort passed to `claude --effort` (low|medium|high|xhigh|max). Empty =
 # use the CLI default. Set EFFORT=high (or xhigh) to give Opus 4.8 a larger thinking
 # budget — e.g. for ConstraBid bid extraction (Claude Gateway V1).

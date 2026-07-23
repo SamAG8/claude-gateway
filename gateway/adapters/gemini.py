@@ -62,6 +62,7 @@ def _build(model_name: str, body: dict, stream: bool) -> CanonicalRequest:
     return CanonicalRequest(
         model=resolve_model(model_name),
         requested_model=model_name,
+        surface="gemini",
         system=_system(body.get("systemInstruction") or body.get("system_instruction")),
         messages=_to_messages(contents),
         max_tokens=gen.get("maxOutputTokens"),

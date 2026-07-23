@@ -58,6 +58,7 @@ def _build(body: dict) -> CanonicalRequest:
     return CanonicalRequest(
         model=resolve_model(requested),
         requested_model=requested,
+        surface="openai",
         system=join_texts(system_parts),
         messages=canon,
         max_tokens=body.get("max_tokens"),

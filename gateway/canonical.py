@@ -22,6 +22,7 @@ class CanonicalRequest:
     model: str               # resolved CLI --model value (after model-map resolution)
     requested_model: str     # the model string the client sent (echoed back in responses)
     system: Optional[str]    # merged plain system text, or None
+    surface: str = ""        # originating protocol ("anthropic"|"openai"|"gemini"); for usage logging only
     messages: list[CanonicalMessage] = field(default_factory=list)
     max_tokens: Optional[int] = None
     stream: bool = False
