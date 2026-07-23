@@ -70,6 +70,22 @@ def resolve_effort(resolved_model: str) -> str | None:
     return config.EFFORT or None
 
 
+def resolve_max_thinking_tokens(resolved_model: str) -> int | None:
+    """MAX_THINKING_TOKENS to inject for a resolved --model, or None to leave the
+    CLI's default thinking budget untouched.
+
+    Precedence: a per-model entry in the models file's ``max_thinking_tokens`` map
+    wins; else the global ``MAX_THINKING_TOKENS`` config applies. Only the fast tier
+    (haiku, keyed as ``{"haiku": 0}``) is present by default, so heavier models
+    (opus/sonnet used for extraction) get None and keep their thinking budget — no
+    cross-impact. A value of 0 fully disables extended thinking in the CLI.
+    """
+    per_model = _load().get("max_thinking_tokens", {})
+    if resolved_model in per_model:
+        return per_model[resolved_model]
+    return config.MAX_THINKING_TOKENS
+
+
 def list_model_ids() -> list[str]:
     """Advertised model ids: every alias key plus the canonical Claude aliases."""
     data = _load()

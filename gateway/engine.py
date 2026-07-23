@@ -6,6 +6,7 @@ Streaming adapters consume the events live; non-streaming adapters drain them.
 import asyncio
 import json
 import logging
+import os
 from typing import AsyncIterator
 
 from . import config, models, usage_log
@@ -227,6 +228,18 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
     stdin_data = build_stdin(req)
     img_n, doc_n, media_n = _media_stats(req)  # usage accounting (see _log_outcome)
 
+    # Fast-tier-only thinking control. req.model is the RESOLVED --model (the adapters
+    # set model=resolve_model(...)), matching resolve_effort's contract in build_argv.
+    # Only when a value is configured (per-model map or global) do we build an env
+    # dict overriding the CLI's MAX_THINKING_TOKENS; otherwise env stays None so the
+    # subprocess inherits the gateway env unchanged — opus/sonnet keep their thinking.
+    mtt = models.resolve_max_thinking_tokens(req.model)
+    subprocess_env = None
+    if mtt is not None:
+        subprocess_env = {**os.environ, "MAX_THINKING_TOKENS": str(mtt)}
+        logger.info("thinking_disabled model=%s max_thinking_tokens=%s surface=%s",
+                    req.model, mtt, req.surface or "-")
+
     # StreamReader line limit for the CLI's stdout/stderr. With --verbose the CLI
     # echoes the user message (inline base64 media included) as one NDJSON line, so
     # the limit must clear the payload we just sent. Scale to the actual stdin size
@@ -243,6 +256,7 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(config.CLEAN_CWD),
                 limit=stream_limit,
+                env=subprocess_env,  # None -> inherit gateway env (opus/sonnet untouched)
             )
         except FileNotFoundError:
             yield Error(500, "claude CLI not found on PATH")

@@ -23,5 +23,8 @@
   "effort": {
     "haiku": "low"
   },
+  "max_thinking_tokens": {
+    "haiku": 0
+  },
   "passthrough_prefixes": ["claude-"]
 }
