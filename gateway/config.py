@@ -56,6 +56,14 @@ USAGE_LOG = os.getenv("USAGE_LOG", "").strip()
 # budget — e.g. for ConstraBid bid extraction (Claude Gateway V1).
 EFFORT = os.getenv("EFFORT", "").strip()
 
+# Global override for the `claude` CLI's MAX_THINKING_TOKENS env var. When set, it
+# applies to every resolved model lacking a per-model entry in the models file's
+# ``max_thinking_tokens`` map. Default None = do NOT inject the env var, so the CLI
+# uses its own default thinking budget (opus/sonnet extraction keeps thinking).
+# MAX_THINKING_TOKENS=0 fully disables extended thinking (the CLI maps 0 to
+# {type:"disabled"}, not clamped to 1024). Per-model map entries win; see models.py.
+MAX_THINKING_TOKENS = int(os.getenv("MAX_THINKING_TOKENS")) if os.getenv("MAX_THINKING_TOKENS") else None
+
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # --- MCP connector (per-user company data) ---------------------------------
