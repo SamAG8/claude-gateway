@@ -76,6 +76,7 @@ def _build(body: dict) -> CanonicalRequest:
     return CanonicalRequest(
         model=resolve_model(requested),
         requested_model=requested,
+        surface="anthropic",
         system=_system_text(body.get("system")),
         messages=_to_messages(messages),
         max_tokens=body.get("max_tokens") or 4096,
