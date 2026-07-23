@@ -111,3 +111,23 @@ def test_real_config_routes_fast_tier_to_haiku():
     assert data["aliases"]["gemini-3.1-flash"] == "haiku"
     assert data["effort"]["haiku"] == "low"
     assert data["aliases"]["gemini-3.1-pro-preview"] == "opus"
+
+
+def test_is_fast_model_default(models_file):
+    """Absent a fast_models list, haiku is the fast tier; heavier models are not."""
+    assert models.is_fast_model("haiku") is True
+    assert models.is_fast_model("sonnet") is False
+    assert models.is_fast_model("opus") is False
+
+
+def test_is_fast_model_configurable(tmp_path, monkeypatch):
+    path = tmp_path / "models.json"
+    path.write_text(json.dumps({
+        "default": "sonnet", "aliases": {},
+        "fast_models": ["haiku", "sonnet"],
+        "passthrough_prefixes": ["claude-"],
+    }))
+    monkeypatch.setattr(config, "MODELS_FILE", str(path))
+    models._cache.update(mtime=None, path=None, data=None)
+    assert models.is_fast_model("sonnet") is True
+    assert models.is_fast_model("opus") is False

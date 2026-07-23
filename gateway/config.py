@@ -29,7 +29,14 @@ API_KEYS = _load_api_keys()
 # "bare": adds --bare (skips hooks/LSP/memory/CLAUDE.md) but forces ANTHROPIC_API_KEY auth.
 ISOLATION_MODE = os.getenv("ISOLATION_MODE", "clean").strip().lower()
 
-MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "5"))
+MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "5"))  # heavy lane (opus/sonnet) capacity
+# Dedicated fast-lane capacity so interactive fast-tier (haiku) calls don't queue
+# behind long-running heavy extraction jobs. See models.is_fast_model + engine lanes.
+MAX_CONCURRENT_FAST = int(os.getenv("MAX_CONCURRENT_FAST", "3"))
+# Max seconds a request may wait to acquire its lane's semaphore slot before the
+# gateway gives up and returns a fast 503 ("saturated, retry") instead of letting
+# the client burn its whole timeout budget in an invisible queue. See engine.
+QUEUE_WAIT_MAX = float(os.getenv("QUEUE_WAIT_MAX", "10"))
 TIMEOUT = int(os.getenv("TIMEOUT", "120"))
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))

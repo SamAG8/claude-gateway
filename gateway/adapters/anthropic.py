@@ -122,7 +122,7 @@ async def messages(request: Request):
     # this user with no extra credential.
     if config.mcp_enabled():
         req.mcp_token = request.headers.get("x-mcp-token") or pat or None
-    return await protocol.respond(req, _Formatter(req))
+    return await protocol.respond(req, _Formatter(req), request)
 
 
 class _Formatter:

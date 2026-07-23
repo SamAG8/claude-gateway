@@ -23,33 +23,44 @@ from .canonical import (
 
 logger = logging.getLogger("claude-gateway.engine")
 
-_semaphore: asyncio.Semaphore | None = None
+# Two keyed concurrency lanes so long heavy extraction jobs (opus/sonnet, up to the
+# 300s budget) can't starve latency-sensitive fast-tier (haiku) calls. Created
+# lazily so each binds to the running event loop. Heavy keeps the historical
+# MAX_CONCURRENT capacity unchanged; fast gets its own MAX_CONCURRENT_FAST.
+_semaphores: dict[str, asyncio.Semaphore] = {}
 
 
 def _log_outcome(outcome: str, req: CanonicalRequest, elapsed: float,
                  in_tok: int | None = None, out_tok: int | None = None,
                  cache_read: int | None = None, cache_creation: int | None = None,
                  num_images: int = 0, num_docs: int = 0, media_bytes: int = 0,
+                 lane: str | None = None, queue_wait_ms: int | None = None,
+                 spawn_ms: int | None = None,
                  level: int = logging.INFO) -> None:
     """One line per invocation so errors and durations are visible in journald,
     plus a structured JSONL record (when USAGE_LOG is set) for aggregation."""
     logger.log(level,
-               "run_claude %s surface=%s model=%s elapsed=%.1fs in=%s out=%s "
-               "cache_read=%s cache_write=%s imgs=%s docs=%s",
-               outcome, req.surface or "-", req.model, elapsed, in_tok, out_tok,
+               "run_claude %s surface=%s model=%s lane=%s queue_wait_ms=%s spawn_ms=%s "
+               "elapsed=%.1fs in=%s out=%s cache_read=%s cache_write=%s imgs=%s docs=%s",
+               outcome, req.surface or "-", req.model, lane or "-", queue_wait_ms,
+               spawn_ms, elapsed, in_tok, out_tok,
                cache_read, cache_creation, num_images, num_docs)
     usage_log.record(outcome=outcome, req=req, elapsed=elapsed,
                      input_tokens=in_tok, output_tokens=out_tok,
                      cache_read=cache_read, cache_creation=cache_creation,
-                     num_images=num_images, num_docs=num_docs, media_bytes=media_bytes)
+                     num_images=num_images, num_docs=num_docs, media_bytes=media_bytes,
+                     lane=lane, queue_wait_ms=queue_wait_ms, spawn_ms=spawn_ms)
 
 
-def _get_semaphore() -> asyncio.Semaphore:
-    # Created lazily so it binds to the running event loop.
-    global _semaphore
-    if _semaphore is None:
-        _semaphore = asyncio.Semaphore(config.MAX_CONCURRENT)
-    return _semaphore
+def _get_semaphore(lane: str) -> asyncio.Semaphore:
+    # Created lazily so each binds to the running event loop. "fast" and "heavy"
+    # are the only lanes; capacities come from config.
+    sem = _semaphores.get(lane)
+    if sem is None:
+        cap = config.MAX_CONCURRENT_FAST if lane == "fast" else config.MAX_CONCURRENT
+        sem = asyncio.Semaphore(cap)
+        _semaphores[lane] = sem
+    return sem
 
 
 def ensure_clean_cwd() -> None:
@@ -247,7 +258,32 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
     # fixed cap would break multi-image requests (issue #11).
     stream_limit = max(config.STREAM_LIMIT, 2 * len(stdin_data))
 
-    async with _get_semaphore():
+    # Lane selection is on the RESOLVED --model (req.model), same contract as
+    # resolve_effort / resolve_max_thinking_tokens: fast tier (haiku) gets its own
+    # semaphore so it can't queue behind heavy extraction jobs on the heavy lane.
+    lane = "fast" if models.is_fast_model(req.model) else "heavy"
+    sem = _get_semaphore(lane)
+
+    _loop = asyncio.get_event_loop()
+    enqueue_t = _loop.time()
+    # Bound the queue wait: don't let a saturated gateway silently sit on a request
+    # for its whole timeout budget. On timeout, fail fast with a 503 the client can
+    # react to (retry/backoff) immediately. acquired guards the release in finally.
+    acquired = False
+    try:
+        await asyncio.wait_for(sem.acquire(), timeout=config.QUEUE_WAIT_MAX)
+        acquired = True
+    except asyncio.TimeoutError:
+        queue_wait_ms = int((_loop.time() - enqueue_t) * 1000)
+        _log_outcome("saturated", req, _loop.time() - enqueue_t,
+                     num_images=img_n, num_docs=doc_n, media_bytes=media_n,
+                     lane=lane, queue_wait_ms=queue_wait_ms, level=logging.WARNING)
+        yield Error(503, "gateway saturated, retry")
+        return
+
+    queue_wait_ms = int((_loop.time() - enqueue_t) * 1000)
+    try:
+        spawn_t = _loop.time()
         try:
             process = await asyncio.create_subprocess_exec(
                 *argv,
@@ -261,6 +297,15 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
         except FileNotFoundError:
             yield Error(500, "claude CLI not found on PATH")
             return
+        spawn_ms = int((_loop.time() - spawn_t) * 1000)
+
+        # Close over lane/queue_wait_ms/spawn_ms so every outcome line carries the
+        # A2 observability fields without re-threading them at each call site.
+        def _log(outcome, elapsed, *a, **kw):
+            kw.setdefault("lane", lane)
+            kw.setdefault("queue_wait_ms", queue_wait_ms)
+            kw.setdefault("spawn_ms", spawn_ms)
+            _log_outcome(outcome, req, elapsed, *a, **kw)
 
         try:
             process.stdin.write(stdin_data)
@@ -284,7 +329,7 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                 if remaining <= 0:
                     process.kill()
                     await process.wait()
-                    _log_outcome("timeout", req, loop.time() - start,
+                    _log("timeout", loop.time() - start,
                                  num_images=img_n, num_docs=doc_n, media_bytes=media_n,
                                  level=logging.WARNING)
                     yield Error(504, "upstream timeout")
@@ -294,7 +339,7 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.wait()
-                    _log_outcome("timeout", req, loop.time() - start,
+                    _log("timeout", loop.time() - start,
                                  num_images=img_n, num_docs=doc_n, media_bytes=media_n,
                                  level=logging.WARNING)
                     yield Error(504, "upstream timeout")
@@ -355,7 +400,7 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                 elif otype == "result":
                     if obj.get("is_error") or obj.get("subtype") != "success":
                         await process.wait()
-                        _log_outcome("error", req, loop.time() - start,
+                        _log("error", loop.time() - start,
                                      num_images=img_n, num_docs=doc_n, media_bytes=media_n,
                                      level=logging.WARNING)
                         yield Error(502, obj.get("result") or "upstream error")
@@ -366,7 +411,7 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                     cache_read = usage.get("cache_read_input_tokens", cap_cache_read)
                     cache_creation = usage.get("cache_creation_input_tokens", cap_cache_creation)
                     await process.wait()
-                    _log_outcome("success", req, loop.time() - start, in_tok, out_tok,
+                    _log("success", loop.time() - start, in_tok, out_tok,
                                  cache_read=cache_read, cache_creation=cache_creation,
                                  num_images=img_n, num_docs=doc_n, media_bytes=media_n)
                     yield Stop(
@@ -386,26 +431,46 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                 except Exception:
                     pass
                 msg = err.decode("utf-8", errors="replace").strip()[:500]
-                _log_outcome("no-output", req, loop.time() - start,
+                _log("no-output", loop.time() - start,
                              num_images=img_n, num_docs=doc_n, media_bytes=media_n,
                              level=logging.WARNING)
                 yield Error(502, msg or "no output from claude")
             else:
-                _log_outcome("success", req, loop.time() - start, cap_in or 0, cap_out or 0,
+                _log("success", loop.time() - start, cap_in or 0, cap_out or 0,
                              cache_read=cap_cache_read, cache_creation=cap_cache_creation,
                              num_images=img_n, num_docs=doc_n, media_bytes=media_n)
                 yield Stop(stop_reason=map_stop_reason(cap_stop),
                            output_tokens=cap_out or 0, input_tokens=cap_in or 0)
+        except asyncio.CancelledError:
+            # A3: the client disconnected / the driving task was cancelled. The plain
+            # `except Exception` below does NOT catch CancelledError, so without this
+            # the CLI subprocess would keep running to the gateway TIMEOUT while still
+            # holding this lane's slot — self-amplifying congestion. Kill it now, log,
+            # and re-raise so the slot frees immediately (release is in the finally).
+            try:
+                process.kill()
+                await process.wait()
+            except Exception:
+                pass
+            _log("cancelled", loop.time() - start,
+                 num_images=img_n, num_docs=doc_n, media_bytes=media_n,
+                 level=logging.WARNING)
+            raise
         except Exception as e:  # noqa: BLE001 - surface any spawn/read failure as an error event
             try:
                 process.kill()
                 await process.wait()
             except Exception:
                 pass
-            _log_outcome("exception", req, loop.time() - start,
+            _log("exception", loop.time() - start,
                          num_images=img_n, num_docs=doc_n, media_bytes=media_n,
                          level=logging.ERROR)
             yield Error(500, str(e))
+    finally:
+        # Guaranteed slot release. Only release what we acquired (the queue-wait
+        # timeout path returns before entering this try, with acquired=False).
+        if acquired:
+            sem.release()
 
 
 async def collect(req: CanonicalRequest) -> Result:
