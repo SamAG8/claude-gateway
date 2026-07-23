@@ -233,3 +233,82 @@ async def test_spawn_limit_scales_with_stdin(fake_claude, monkeypatch):
         {"type": "image", "media_type": "image/jpeg", "data": "A" * 100_000}])])
     await _drain(req)
     assert fake_claude["kwargs"]["limit"] == 2 * len(engine.build_stdin(req))
+
+
+# ---- A2: two-lane semaphore + bounded queue wait ------------------------
+
+def _reset_semaphores():
+    engine._semaphores.clear()
+
+
+async def test_lane_selection_fast_vs_heavy(fake_claude, monkeypatch):
+    """haiku picks the fast lane, sonnet the heavy lane (logged + usage-recorded)."""
+    _reset_semaphores()
+    recorded = []
+    monkeypatch.setattr(engine.usage_log, "record",
+                        lambda **kw: recorded.append(kw))
+    await _drain(_req(model="haiku"))
+    await _drain(_req(model="sonnet"))
+    lanes = [r["lane"] for r in recorded]
+    assert lanes == ["fast", "heavy"]
+    assert all(r["queue_wait_ms"] is not None for r in recorded)
+
+
+async def test_saturated_returns_503_and_releases(monkeypatch):
+    """When a lane is full past QUEUE_WAIT_MAX, the request fails fast with 503
+    and does NOT leak a slot (the held slot is released, so a later call succeeds)."""
+    _reset_semaphores()
+    monkeypatch.setattr(config, "QUEUE_WAIT_MAX", 0.05)
+    # Force the heavy lane to capacity 1 and pre-acquire it.
+    monkeypatch.setattr(config, "MAX_CONCURRENT", 1)
+    sem = engine._get_semaphore("heavy")
+    await sem.acquire()  # occupy the only slot
+    events = await _drain(_req(model="sonnet"))
+    assert isinstance(events[-1], Error) and events[-1].status == 503
+    assert "saturated" in events[-1].message
+    # We never entered the run body, so nothing extra was released; free our slot.
+    sem.release()
+    assert sem._value == 1  # back to full capacity, no double-release
+
+
+async def test_slot_released_on_success(fake_claude):
+    """A normal run releases its slot on completion (semaphore returns to full)."""
+    _reset_semaphores()
+    await _drain(_req(model="haiku"))
+    sem = engine._get_semaphore("fast")
+    assert sem._value == config.MAX_CONCURRENT_FAST
+
+
+# ---- A3: kill-on-cancel frees the slot ----------------------------------
+
+async def test_cancel_kills_subprocess_and_frees_slot(monkeypatch):
+    """Cancelling a run mid-stream kills the CLI subprocess and releases the slot."""
+    import asyncio as _asyncio
+    _reset_semaphores()
+
+    class _HangingStream:
+        async def readline(self):
+            await _asyncio.sleep(3600)  # never yields a line
+        async def read(self):
+            return b""
+
+    from conftest import FakeProcess
+    proc = FakeProcess([])
+    proc.stdout = _HangingStream()
+
+    async def fake_exec(*a, **k):
+        return proc
+    monkeypatch.setattr(_asyncio, "create_subprocess_exec", fake_exec)
+
+    async def run():
+        async for _ in engine.run_claude(_req(model="haiku")):
+            pass
+
+    task = _asyncio.ensure_future(run())
+    await _asyncio.sleep(0.05)  # let it spawn + block on readline
+    task.cancel()
+    with pytest.raises(_asyncio.CancelledError):
+        await task
+    assert proc.killed is True
+    sem = engine._get_semaphore("fast")
+    assert sem._value == config.MAX_CONCURRENT_FAST  # slot freed

@@ -96,7 +96,7 @@ async def chat_completions(request: Request):
     except GatewayError as e:
         return openai_error(e.status, e.message, e.err_type)
     include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
-    return await protocol.respond(req, _Formatter(req, include_usage))
+    return await protocol.respond(req, _Formatter(req, include_usage), request)
 
 
 class _Formatter:

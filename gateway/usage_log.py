@@ -29,7 +29,8 @@ def _ensure_dir(path: Path) -> None:
 def record(*, outcome: str, req, elapsed: float,
            input_tokens=None, output_tokens=None,
            cache_read=None, cache_creation=None,
-           num_images: int = 0, num_docs: int = 0, media_bytes: int = 0) -> None:
+           num_images: int = 0, num_docs: int = 0, media_bytes: int = 0,
+           lane=None, queue_wait_ms=None, spawn_ms=None) -> None:
     if not config.USAGE_LOG:
         return
     try:
@@ -39,6 +40,9 @@ def record(*, outcome: str, req, elapsed: float,
             "outcome": outcome,
             "requested_model": req.requested_model,
             "model": req.model,
+            "lane": lane,
+            "queue_wait_ms": queue_wait_ms,
+            "spawn_ms": spawn_ms,
             "elapsed_s": round(elapsed, 3),
             "input_tokens": input_tokens or 0,
             "output_tokens": output_tokens or 0,

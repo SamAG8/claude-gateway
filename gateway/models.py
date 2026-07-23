@@ -70,6 +70,34 @@ def resolve_effort(resolved_model: str) -> str | None:
     return config.EFFORT or None
 
 
+def resolve_max_thinking_tokens(resolved_model: str) -> int | None:
+    """MAX_THINKING_TOKENS to inject for a resolved --model, or None to leave the
+    CLI's default thinking budget untouched.
+
+    Precedence: a per-model entry in the models file's ``max_thinking_tokens`` map
+    wins; else the global ``MAX_THINKING_TOKENS`` config applies. Only the fast tier
+    (haiku, keyed as ``{"haiku": 0}``) is present by default, so heavier models
+    (opus/sonnet used for extraction) get None and keep their thinking budget — no
+    cross-impact. A value of 0 fully disables extended thinking in the CLI.
+    """
+    per_model = _load().get("max_thinking_tokens", {})
+    if resolved_model in per_model:
+        return per_model[resolved_model]
+    return config.MAX_THINKING_TOKENS
+
+
+def is_fast_model(resolved_model: str) -> bool:
+    """True if a resolved --model belongs to the latency-sensitive fast tier.
+
+    Reads the models file's ``fast_models`` list (hot-reloaded, like resolve_effort /
+    resolve_max_thinking_tokens), defaulting to ``["haiku"]`` when absent. The engine
+    uses this to pick the fast semaphore lane so interactive calls don't queue behind
+    long heavy extraction jobs; every non-fast model uses the heavy lane.
+    """
+    fast = _load().get("fast_models", ["haiku"])
+    return resolved_model in fast
+
+
 def list_model_ids() -> list[str]:
     """Advertised model ids: every alias key plus the canonical Claude aliases."""
     data = _load()
