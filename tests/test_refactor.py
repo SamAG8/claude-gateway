@@ -98,6 +98,25 @@ async def test_drive_renders_in_order(monkeypatch):
     assert fmt.calls == ["start", "delta", "delta", "stop"]
 
 
+async def test_drive_suppresses_duplicate_internal_start(monkeypatch):
+    _patch_stream(monkeypatch, [
+        Start("m", 5), Delta("first"), Start("m", 8), Delta("second"),
+        Stop("end_turn", 2, 8),
+    ])
+    fmt = _FakeFmt()
+    out = [c async for c in protocol._drive(None, fmt)]
+    assert out == ["S", "D:first", "D:second", "P"]
+    assert fmt.calls.count("start") == 1
+
+
+async def test_drive_rejects_stop_before_start(monkeypatch):
+    _patch_stream(monkeypatch, [Stop("end_turn", 0, 0)])
+    fmt = _FakeFmt()
+    out = [c async for c in protocol._drive(None, fmt)]
+    assert out == ["X"]
+    assert fmt.calls == ["error"]
+
+
 async def test_drive_terminates_on_stop(monkeypatch):
     # anything after Stop must not be rendered
     _patch_stream(monkeypatch, [Start("m", 5), Stop("end_turn", 1, 5), Delta("late")])

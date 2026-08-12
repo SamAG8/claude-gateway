@@ -104,7 +104,7 @@ async def generate(model_method: str, request: Request):
         req = _build(model_name, body, stream)
     except GatewayError as e:
         return gemini_error(e.status, e.message)
-    return await protocol.respond(req, _Formatter(req))
+    return await protocol.respond(req, _Formatter(req), request)
 
 
 def _usage(prompt: int, completion: int) -> dict:

@@ -29,7 +29,14 @@ API_KEYS = _load_api_keys()
 # "bare": adds --bare (skips hooks/LSP/memory/CLAUDE.md) but forces ANTHROPIC_API_KEY auth.
 ISOLATION_MODE = os.getenv("ISOLATION_MODE", "clean").strip().lower()
 
-MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "5"))
+MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "5"))  # heavy lane (opus/sonnet) capacity
+# Dedicated fast-lane capacity so interactive fast-tier (haiku) calls don't queue
+# behind long-running heavy extraction jobs. See models.is_fast_model + engine lanes.
+MAX_CONCURRENT_FAST = int(os.getenv("MAX_CONCURRENT_FAST", "3"))
+# Max seconds a request may wait to acquire its lane's semaphore slot before the
+# gateway gives up and returns a fast 503 ("saturated, retry") instead of letting
+# the client burn its whole timeout budget in an invisible queue. See engine.
+QUEUE_WAIT_MAX = float(os.getenv("QUEUE_WAIT_MAX", "10"))
 TIMEOUT = int(os.getenv("TIMEOUT", "120"))
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
@@ -55,6 +62,14 @@ USAGE_LOG = os.getenv("USAGE_LOG", "").strip()
 # use the CLI default. Set EFFORT=high (or xhigh) to give Opus 4.8 a larger thinking
 # budget — e.g. for ConstraBid bid extraction (Claude Gateway V1).
 EFFORT = os.getenv("EFFORT", "").strip()
+
+# Global override for the `claude` CLI's MAX_THINKING_TOKENS env var. When set, it
+# applies to every resolved model lacking a per-model entry in the models file's
+# ``max_thinking_tokens`` map. Default None = do NOT inject the env var, so the CLI
+# uses its own default thinking budget (opus/sonnet extraction keeps thinking).
+# MAX_THINKING_TOKENS=0 fully disables extended thinking (the CLI maps 0 to
+# {type:"disabled"}, not clamped to 1024). Per-model map entries win; see models.py.
+MAX_THINKING_TOKENS = int(os.getenv("MAX_THINKING_TOKENS")) if os.getenv("MAX_THINKING_TOKENS") else None
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
