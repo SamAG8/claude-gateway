@@ -29,14 +29,27 @@ class Formatter(Protocol):
 
 
 async def _drive(req: CanonicalRequest, fmt: Formatter) -> AsyncIterator[str]:
+    started = False
     async for ev in engine.run_claude(req):
         if isinstance(ev, Start):
+            # Defense in depth: one HTTP stream represents one public model
+            # message even when an upstream engine performs internal tool turns.
+            # Never let a duplicate Start escape as an invalid protocol sequence.
+            if started:
+                continue
+            started = True
             for chunk in fmt.on_start(ev):
                 yield chunk
         elif isinstance(ev, Delta):
+            if not started:
+                continue
             for chunk in fmt.on_delta(ev):
                 yield chunk
         elif isinstance(ev, Stop):
+            if not started:
+                for chunk in fmt.on_error(Error(502, "upstream ended before message_start")):
+                    yield chunk
+                return
             for chunk in fmt.on_stop(ev):
                 yield chunk
             return
