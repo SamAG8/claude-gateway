@@ -382,8 +382,17 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                         cap_in = usage.get("input_tokens")
                         cap_cache_read = usage.get("cache_read_input_tokens", cap_cache_read)
                         cap_cache_creation = usage.get("cache_creation_input_tokens", cap_cache_creation)
-                        started = True
-                        yield Start(model=msg.get("model"), input_tokens=usage.get("input_tokens", 0))
+                        # A CLI invocation with MCP tools can contain several
+                        # internal model turns. Each turn has its own Anthropic
+                        # message_start/message_stop pair, but this HTTP request is
+                        # one public Messages API response. Exposing every internal
+                        # start creates an invalid SSE sequence for SDK clients:
+                        # message_start -> ... -> message_start. Open the public
+                        # message once and append text from later internal turns to
+                        # that same content block until the final CLI result.
+                        if not started:
+                            started = True
+                            yield Start(model=msg.get("model"), input_tokens=usage.get("input_tokens", 0))
                     elif etype == "content_block_delta":
                         delta = ev.get("delta", {})
                         if delta.get("type") == "text_delta":
