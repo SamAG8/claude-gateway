@@ -30,7 +30,10 @@ def record(*, outcome: str, req, elapsed: float,
            input_tokens=None, output_tokens=None,
            cache_read=None, cache_creation=None,
            num_images: int = 0, num_docs: int = 0, media_bytes: int = 0,
-           lane=None, queue_wait_ms=None, spawn_ms=None) -> None:
+           lane=None, queue_wait_ms=None, spawn_ms=None, stdin_ms=None,
+           first_event_ms=None, first_text_ms=None, total_ms=None,
+           prompt_bytes: int = 0, history_messages: int = 0,
+           mcp: bool = False) -> None:
     if not config.USAGE_LOG:
         return
     try:
@@ -43,6 +46,13 @@ def record(*, outcome: str, req, elapsed: float,
             "lane": lane,
             "queue_wait_ms": queue_wait_ms,
             "spawn_ms": spawn_ms,
+            "stdin_ms": stdin_ms,
+            "first_event_ms": first_event_ms,
+            "first_text_ms": first_text_ms,
+            "total_ms": total_ms,
+            "prompt_bytes": prompt_bytes,
+            "history_messages": history_messages,
+            "mcp": bool(mcp),
             "elapsed_s": round(elapsed, 3),
             "input_tokens": input_tokens or 0,
             "output_tokens": output_tokens or 0,
