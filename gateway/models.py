@@ -47,6 +47,10 @@ def resolve_model(requested: str) -> str:
     data = _load()
     if not requested:
         return _default_model(data)
+    # Canonical tier names are part of the public API even when an operator's
+    # custom models file omits redundant self-aliases.
+    if requested in {"sonnet", "opus", "haiku"}:
+        return requested
     for prefix in data.get("passthrough_prefixes", []):
         if requested.startswith(prefix):
             return requested
@@ -59,10 +63,8 @@ def resolve_model(requested: str) -> str:
 def model_tier(resolved_model: str) -> str:
     """Return the stable haiku/sonnet/opus family for a resolved CLI model id.
 
-    Clients commonly send dated ids such as ``claude-haiku-4-5-20251001``.
-    Those ids pass through to the CLI, but operational policy (fast lane,
-    effort, thinking budget) must still match the family-level ``haiku`` entry
-    in models.json. Unknown ids remain exact so custom model keys still work.
+    Dated ids pass through to the CLI, but operational policy must still inherit
+    the family-level fast-lane, effort, and thinking-budget settings.
     """
     value = (resolved_model or "").lower()
     for tier in ("haiku", "sonnet", "opus"):
@@ -121,6 +123,26 @@ def is_fast_model(resolved_model: str) -> bool:
     """
     fast = _load().get("fast_models", ["haiku"])
     return resolved_model in fast or model_tier(resolved_model) in fast
+
+
+_EFFORT_VALUES = {"low", "medium", "high", "xhigh", "max"}
+
+
+def parse_model_spec(requested: str) -> tuple[str, str | None]:
+    """Split a client model string of the form ``name[:effort]`` into a resolved
+    ``--model`` value and an optional per-request effort override.
+
+    Lets a caller choose both per request (e.g. ``opus:high``, ``haiku:low``,
+    ``sonnet``) with no gateway config change — the suffix is only treated as
+    effort when it is a valid effort keyword, so model names that legitimately
+    contain a colon are left untouched.
+    """
+    effort: str | None = None
+    if requested:
+        head, sep, tail = requested.rpartition(":")
+        if sep and head and tail in _EFFORT_VALUES:
+            requested, effort = head, tail
+    return resolve_model(requested), effort
 
 
 def list_model_ids() -> list[str]:

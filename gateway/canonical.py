@@ -23,6 +23,7 @@ class CanonicalRequest:
     requested_model: str     # the model string the client sent (echoed back in responses)
     system: Optional[str]    # merged plain system text, or None
     surface: str = ""        # originating protocol ("anthropic"|"openai"|"gemini"); for usage logging only
+    effort_override: Optional[str] = None  # optional ``name:effort`` request suffix
     messages: list[CanonicalMessage] = field(default_factory=list)
     max_tokens: Optional[int] = None
     stream: bool = False

@@ -72,12 +72,20 @@ The client's model string is resolved to a real `claude --model` value via
    straight through — so `claude-sonnet-4-6`, `sonnet`, `opus`, `haiku` work and
    stay current as Claude's aliases track the latest models.
 2. Otherwise a known alias (e.g. `gpt-4o → sonnet`, `gemini-1.5-pro → opus`) maps to a tier.
+   The bare tier names `sonnet` / `opus` / `haiku` are aliases too, so a caller can request a tier directly.
 3. Otherwise it falls back to the default. **Unknown models never error.**
+
+**Per-request model + effort.** A caller picks both per request via the model
+string `name[:effort]` — e.g. `opus:high`, `haiku:low`, or just `sonnet` — with
+no gateway change. The `:effort` suffix (only `low|medium|high|xhigh|max`) sets
+reasoning effort for that one request and **wins over** the config below. This
+lets a client say "analyze this with opus at high effort" without touching the gateway.
 
 An optional `"effort"` map in `models.json` sets reasoning effort per resolved
 model (e.g. `{"haiku": "low"}`) — this wins over the global `EFFORT` env, so a
 latency-sensitive fast tier can run at low effort while heavier models keep the
-global setting. Models with no entry fall back to `EFFORT` (then the CLI default).
+global setting. Precedence: per-request `:effort` → `models.json` effort map →
+global `EFFORT` → CLI default.
 
 ## Setup
 
@@ -131,26 +139,18 @@ RUN_LIVE=1 pytest      # also runs the live contamination smoke test (needs clau
 
 ## Latency measurement
 
-Every invocation records queue, subprocess spawn, stdin, first-event,
-first-text (TTFT), and total timings when `USAGE_LOG` is configured. The log
-contains counts and timings only — never prompts, responses, API keys, or MCP
-tokens. Aggregate P50/P95/P99 by model and plain/MCP path with:
+With `USAGE_LOG` configured, every invocation records queue, spawn, stdin,
+first-event, first-text (TTFT), and total timings. Only counts and timings are
+stored — never prompts, responses, API keys, or MCP tokens.
 
 ```bash
 python scripts/usage_report.py "$USAGE_LOG" --today
-```
-
-For a repeatable end-to-end benchmark against any deployed Anthropic surface:
-
-```bash
-API_KEY=... python scripts/benchmark_latency.py \
-  https://gateway.example/v1/messages \
+API_KEY=... python scripts/benchmark_latency.py https://gateway.example/v1/messages \
   --model claude-haiku-4-5-20251001 --requests 20 --concurrency 2
 ```
 
-Add `--mcp` with `MCP_TOKEN` set only when intentionally measuring the MCP path.
-The tool prints status counts and TTFT/total P50/P95/P99, never credentials or
-response content.
+The report groups P50/P95/P99 by model and plain/MCP path. Add `--mcp` with
+`MCP_TOKEN` set only when intentionally measuring the MCP path.
 
 ## Deployment (CI/CD)
 
@@ -173,11 +173,11 @@ Multi-turn history is replayed as a flattened transcript, and images in prior tu
 are dropped to `[image omitted]` (the final turn's images are sent natively). Usage
 `prompt_tokens` reflects the CLI's accounting.
 
-Each request is a fresh isolated CLI process. A persistent interactive CLI worker
+Each request is a fresh isolated CLI process. A persistent interactive worker
 would mix sessions/credentials and does not expose the stateless stream-json API
-needed by this gateway, so process reuse is deliberately not attempted. The fast
-lane, family-aware Haiku policy, bounded queue, and prompt cache are the safe
-latency controls for subscription-backed CLI mode.
+required here, so process reuse is deliberately not attempted. Family-aware
+Haiku routing, separate concurrency lanes, bounded queues, and prompt caching are
+the safe latency controls for subscription-backed CLI mode.
 
 ## Security
 
