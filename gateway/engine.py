@@ -35,21 +35,30 @@ def _log_outcome(outcome: str, req: CanonicalRequest, elapsed: float,
                  cache_read: int | None = None, cache_creation: int | None = None,
                  num_images: int = 0, num_docs: int = 0, media_bytes: int = 0,
                  lane: str | None = None, queue_wait_ms: int | None = None,
-                 spawn_ms: int | None = None,
+                 spawn_ms: int | None = None, stdin_ms: int | None = None,
+                 first_event_ms: int | None = None, first_text_ms: int | None = None,
+                 total_ms: int | None = None, prompt_bytes: int = 0,
+                 history_messages: int = 0, mcp: bool = False,
                  level: int = logging.INFO) -> None:
     """One line per invocation so errors and durations are visible in journald,
     plus a structured JSONL record (when USAGE_LOG is set) for aggregation."""
     logger.log(level,
-               "run_claude %s surface=%s model=%s lane=%s queue_wait_ms=%s spawn_ms=%s "
+               "run_claude %s surface=%s model=%s lane=%s mcp=%s queue_ms=%s spawn_ms=%s "
+               "stdin_ms=%s first_event_ms=%s first_text_ms=%s total_ms=%s "
                "elapsed=%.1fs in=%s out=%s cache_read=%s cache_write=%s imgs=%s docs=%s",
-               outcome, req.surface or "-", req.model, lane or "-", queue_wait_ms,
-               spawn_ms, elapsed, in_tok, out_tok,
+               outcome, req.surface or "-", req.model, lane or "-", mcp, queue_wait_ms,
+               spawn_ms, stdin_ms, first_event_ms, first_text_ms, total_ms,
+               elapsed, in_tok, out_tok,
                cache_read, cache_creation, num_images, num_docs)
     usage_log.record(outcome=outcome, req=req, elapsed=elapsed,
                      input_tokens=in_tok, output_tokens=out_tok,
                      cache_read=cache_read, cache_creation=cache_creation,
                      num_images=num_images, num_docs=num_docs, media_bytes=media_bytes,
-                     lane=lane, queue_wait_ms=queue_wait_ms, spawn_ms=spawn_ms)
+                     lane=lane, queue_wait_ms=queue_wait_ms, spawn_ms=spawn_ms,
+                     stdin_ms=stdin_ms, first_event_ms=first_event_ms,
+                     first_text_ms=first_text_ms, total_ms=total_ms,
+                     prompt_bytes=prompt_bytes, history_messages=history_messages,
+                     mcp=mcp)
 
 
 def _get_semaphore(lane: str) -> asyncio.Semaphore:
@@ -277,7 +286,11 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
         queue_wait_ms = int((_loop.time() - enqueue_t) * 1000)
         _log_outcome("saturated", req, _loop.time() - enqueue_t,
                      num_images=img_n, num_docs=doc_n, media_bytes=media_n,
-                     lane=lane, queue_wait_ms=queue_wait_ms, level=logging.WARNING)
+                     lane=lane, queue_wait_ms=queue_wait_ms,
+                     total_ms=queue_wait_ms, prompt_bytes=len(stdin_data),
+                     history_messages=max(0, len(req.messages or []) - 1),
+                     mcp=bool(config.mcp_enabled() and req.mcp_token),
+                     level=logging.WARNING)
         yield Error(503, "gateway saturated, retry")
         return
 
@@ -299,20 +312,33 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
             return
         spawn_ms = int((_loop.time() - spawn_t) * 1000)
 
-        # Close over lane/queue_wait_ms/spawn_ms so every outcome line carries the
-        # A2 observability fields without re-threading them at each call site.
+        stdin_ms = 0
+        first_event_ms = None
+        first_text_ms = None
+
+        # Close over phase timings so every terminal outcome is directly usable
+        # for P50/P95/P99 analysis without logging prompt content or credentials.
         def _log(outcome, elapsed, *a, **kw):
             kw.setdefault("lane", lane)
             kw.setdefault("queue_wait_ms", queue_wait_ms)
             kw.setdefault("spawn_ms", spawn_ms)
+            kw.setdefault("stdin_ms", stdin_ms)
+            kw.setdefault("first_event_ms", first_event_ms)
+            kw.setdefault("first_text_ms", first_text_ms)
+            kw.setdefault("total_ms", int((_loop.time() - enqueue_t) * 1000))
+            kw.setdefault("prompt_bytes", len(stdin_data))
+            kw.setdefault("history_messages", max(0, len(req.messages or []) - 1))
+            kw.setdefault("mcp", bool(config.mcp_enabled() and req.mcp_token))
             _log_outcome(outcome, req, elapsed, *a, **kw)
 
+        stdin_t = _loop.time()
         try:
             process.stdin.write(stdin_data)
             await process.stdin.drain()
             process.stdin.close()
         except (BrokenPipeError, ConnectionResetError):
             pass
+        stdin_ms = int((_loop.time() - stdin_t) * 1000)
 
         loop = asyncio.get_event_loop()
         start = loop.time()
@@ -377,6 +403,8 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                     ev = obj.get("event", {})
                     etype = ev.get("type")
                     if etype == "message_start":
+                        if first_event_ms is None:
+                            first_event_ms = int((loop.time() - enqueue_t) * 1000)
                         msg = ev.get("message", {})
                         usage = msg.get("usage", {})
                         cap_in = usage.get("input_tokens")
@@ -396,6 +424,8 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                     elif etype == "content_block_delta":
                         delta = ev.get("delta", {})
                         if delta.get("type") == "text_delta":
+                            if first_text_ms is None:
+                                first_text_ms = int((loop.time() - enqueue_t) * 1000)
                             yield Delta(text=delta.get("text", ""))
                     elif etype == "message_delta":
                         cap_stop = ev.get("delta", {}).get("stop_reason", cap_stop)

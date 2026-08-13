@@ -129,6 +129,29 @@ pytest                 # mocked engine — no CLI calls
 RUN_LIVE=1 pytest      # also runs the live contamination smoke test (needs claude)
 ```
 
+## Latency measurement
+
+Every invocation records queue, subprocess spawn, stdin, first-event,
+first-text (TTFT), and total timings when `USAGE_LOG` is configured. The log
+contains counts and timings only — never prompts, responses, API keys, or MCP
+tokens. Aggregate P50/P95/P99 by model and plain/MCP path with:
+
+```bash
+python scripts/usage_report.py "$USAGE_LOG" --today
+```
+
+For a repeatable end-to-end benchmark against any deployed Anthropic surface:
+
+```bash
+API_KEY=... python scripts/benchmark_latency.py \
+  https://gateway.example/v1/messages \
+  --model claude-haiku-4-5-20251001 --requests 20 --concurrency 2
+```
+
+Add `--mcp` with `MCP_TOKEN` set only when intentionally measuring the MCP path.
+The tool prints status counts and TTFT/total P50/P95/P99, never credentials or
+response content.
+
 ## Deployment (CI/CD)
 
 Pushing to `main` runs the test suite on GitHub Actions and, when it's green,
@@ -149,6 +172,12 @@ strictly enforced. Tool / function calling is accepted but ignored (no error).
 Multi-turn history is replayed as a flattened transcript, and images in prior turns
 are dropped to `[image omitted]` (the final turn's images are sent natively). Usage
 `prompt_tokens` reflects the CLI's accounting.
+
+Each request is a fresh isolated CLI process. A persistent interactive CLI worker
+would mix sessions/credentials and does not expose the stateless stream-json API
+needed by this gateway, so process reuse is deliberately not attempted. The fast
+lane, family-aware Haiku policy, bounded queue, and prompt cache are the safe
+latency controls for subscription-backed CLI mode.
 
 ## Security
 

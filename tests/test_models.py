@@ -118,6 +118,22 @@ def test_is_fast_model_default(models_file):
     assert models.is_fast_model("haiku") is True
     assert models.is_fast_model("sonnet") is False
     assert models.is_fast_model("opus") is False
+    assert models.is_fast_model("claude-haiku-4-5-20251001") is True
+    assert models.is_fast_model("claude-sonnet-5") is False
+
+
+def test_dated_model_ids_inherit_family_effort_and_thinking(effort_models_file, monkeypatch):
+    monkeypatch.setattr(config, "EFFORT", "high")
+    data = json.loads(effort_models_file.read_text())
+    data["max_thinking_tokens"] = {"haiku": 0}
+    effort_models_file.write_text(json.dumps(data))
+    import os
+    st = effort_models_file.stat()
+    os.utime(effort_models_file, (st.st_atime + 5, st.st_mtime + 5))
+    assert models.model_tier("claude-haiku-4-5-20251001") == "haiku"
+    assert models.resolve_effort("claude-haiku-4-5-20251001") == "low"
+    assert models.resolve_max_thinking_tokens("claude-haiku-4-5-20251001") == 0
+    assert models.resolve_effort("claude-opus-4-8") == "high"
 
 
 def test_is_fast_model_configurable(tmp_path, monkeypatch):

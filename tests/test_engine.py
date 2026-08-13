@@ -286,6 +286,21 @@ async def test_lane_selection_fast_vs_heavy(fake_claude, monkeypatch):
     lanes = [r["lane"] for r in recorded]
     assert lanes == ["fast", "heavy"]
     assert all(r["queue_wait_ms"] is not None for r in recorded)
+    assert all(r["first_event_ms"] is not None for r in recorded)
+    assert all(r["first_text_ms"] is not None for r in recorded)
+    assert all(r["total_ms"] is not None for r in recorded)
+    assert all(r["prompt_bytes"] > 0 for r in recorded)
+    assert all(r["mcp"] is False for r in recorded)
+
+
+async def test_exact_haiku_id_uses_fast_lane_and_disables_thinking(fake_claude, monkeypatch):
+    """Nimbus sends dated Claude ids, not the short ``haiku`` alias."""
+    _reset_semaphores()
+    recorded = []
+    monkeypatch.setattr(engine.usage_log, "record", lambda **kw: recorded.append(kw))
+    await _drain(_req(model="claude-haiku-4-5-20251001"))
+    assert recorded[0]["lane"] == "fast"
+    assert fake_claude["kwargs"]["env"]["MAX_THINKING_TOKENS"] == "0"
 
 
 async def test_saturated_returns_503_and_releases(monkeypatch):

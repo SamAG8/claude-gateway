@@ -56,6 +56,31 @@ def resolve_model(requested: str) -> str:
     return _default_model(data)
 
 
+def model_tier(resolved_model: str) -> str:
+    """Return the stable haiku/sonnet/opus family for a resolved CLI model id.
+
+    Clients commonly send dated ids such as ``claude-haiku-4-5-20251001``.
+    Those ids pass through to the CLI, but operational policy (fast lane,
+    effort, thinking budget) must still match the family-level ``haiku`` entry
+    in models.json. Unknown ids remain exact so custom model keys still work.
+    """
+    value = (resolved_model or "").lower()
+    for tier in ("haiku", "sonnet", "opus"):
+        if tier in value:
+            return tier
+    return resolved_model
+
+
+def _per_model_value(section: str, resolved_model: str):
+    values = _load().get(section, {})
+    if resolved_model in values:
+        return True, values[resolved_model]
+    tier = model_tier(resolved_model)
+    if tier in values:
+        return True, values[tier]
+    return False, None
+
+
 def resolve_effort(resolved_model: str) -> str | None:
     """Effort for a resolved --model, or None to use the CLI default.
 
@@ -64,9 +89,9 @@ def resolve_effort(resolved_model: str) -> str | None:
     (haiku) run at low effort for latency-sensitive extraction while heavier
     models (opus, used by ConstraBid) keep the global setting — no cross-impact.
     """
-    per_model = _load().get("effort", {})
-    if resolved_model in per_model:
-        return per_model[resolved_model] or None
+    found, value = _per_model_value("effort", resolved_model)
+    if found:
+        return value or None
     return config.EFFORT or None
 
 
@@ -80,9 +105,9 @@ def resolve_max_thinking_tokens(resolved_model: str) -> int | None:
     (opus/sonnet used for extraction) get None and keep their thinking budget — no
     cross-impact. A value of 0 fully disables extended thinking in the CLI.
     """
-    per_model = _load().get("max_thinking_tokens", {})
-    if resolved_model in per_model:
-        return per_model[resolved_model]
+    found, value = _per_model_value("max_thinking_tokens", resolved_model)
+    if found:
+        return value
     return config.MAX_THINKING_TOKENS
 
 
@@ -95,7 +120,7 @@ def is_fast_model(resolved_model: str) -> bool:
     long heavy extraction jobs; every non-fast model uses the heavy lane.
     """
     fast = _load().get("fast_models", ["haiku"])
-    return resolved_model in fast
+    return resolved_model in fast or model_tier(resolved_model) in fast
 
 
 def list_model_ids() -> list[str]:

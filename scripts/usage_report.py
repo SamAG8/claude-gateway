@@ -37,6 +37,50 @@ def _fmt_int(n):
     return f"{int(n):,}"
 
 
+def _percentile(values, pct):
+    values = sorted(float(v) for v in values if v is not None)
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    pos = (len(values) - 1) * pct
+    lo = int(pos)
+    hi = min(lo + 1, len(values) - 1)
+    return values[lo] + (values[hi] - values[lo]) * (pos - lo)
+
+
+def _latency_stats(rows):
+    def pct(field, p):
+        value = _percentile([r.get(field) for r in rows], p)
+        return round(value) if value is not None else None
+    return {
+        "calls": len(rows),
+        "queue_p95_ms": pct("queue_wait_ms", 0.95),
+        "spawn_p95_ms": pct("spawn_ms", 0.95),
+        "ttft_p50_ms": pct("first_text_ms", 0.50),
+        "ttft_p95_ms": pct("first_text_ms", 0.95),
+        "ttft_p99_ms": pct("first_text_ms", 0.99),
+        "total_p50_ms": pct("total_ms", 0.50),
+        "total_p95_ms": pct("total_ms", 0.95),
+        "total_p99_ms": pct("total_ms", 0.99),
+    }
+
+
+def _print_latency(rows):
+    groups = defaultdict(list)
+    for row in rows:
+        groups[f"{row.get('model') or '-'}|{'mcp' if row.get('mcp') else 'plain'}"].append(row)
+    print("\nLatency by model and MCP (milliseconds):")
+    print(f"  {'key':<28} {'calls':>6} {'q95':>7} {'sp95':>7} "
+          f"{'tt50':>7} {'tt95':>7} {'tt99':>7} {'tot50':>7} {'tot95':>7} {'tot99':>7}")
+    for key, grouped in sorted(groups.items()):
+        s = _latency_stats(grouped)
+        val = lambda name: "-" if s[name] is None else str(s[name])
+        print(f"  {key:<28} {s['calls']:>6} {val('queue_p95_ms'):>7} {val('spawn_p95_ms'):>7} "
+              f"{val('ttft_p50_ms'):>7} {val('ttft_p95_ms'):>7} {val('ttft_p99_ms'):>7} "
+              f"{val('total_p50_ms'):>7} {val('total_p95_ms'):>7} {val('total_p99_ms'):>7}")
+
+
 def _bucket(rows, key):
     agg = defaultdict(lambda: {"n": 0, "in": 0, "out": 0, "cr": 0, "cw": 0,
                                "cost": 0.0, "docs": 0, "imgs": 0, "elapsed": 0.0})
@@ -110,6 +154,7 @@ def main():
     _print_bucket("By model:", _bucket(rows, "model"))
     _print_bucket("By surface:", _bucket(rows, "surface"))
     _print_bucket("By outcome:", _bucket(rows, "outcome"))
+    _print_latency(rows)
 
     ranked = sorted(rows, key=lambda r: r.get("est_cost_usd") or 0.0, reverse=True)[:args.top]
     print(f"\nTop {len(ranked)} calls by reference cost:")
