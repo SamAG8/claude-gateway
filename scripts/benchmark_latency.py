@@ -38,6 +38,11 @@ def summarize(samples):
     }
 
 
+def url_origin(url):
+    """Return a printable origin on both old and new httpx releases."""
+    return str(httpx.URL(url).copy_with(path="/"))
+
+
 async def run(args):
     api_key = os.getenv(args.api_key_env, "")
     if not api_key:
@@ -76,7 +81,7 @@ async def run(args):
         for _ in range(args.warmup):
             await one()
         samples = await asyncio.gather(*(one() for _ in range(args.requests)))
-    result = {"url_origin": httpx.URL(args.url).copy_with(path="/").human_repr(),
+    result = {"url_origin": url_origin(args.url),
               "model": args.model, "mcp": bool(args.mcp), "concurrency": args.concurrency,
               **summarize(samples)}
     print(json.dumps(result, indent=2))

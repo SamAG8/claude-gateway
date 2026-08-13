@@ -1,5 +1,5 @@
 """Pure checks for latency percentile/report helpers."""
-from scripts.benchmark_latency import percentile, summarize
+from scripts.benchmark_latency import percentile, summarize, url_origin
 from scripts.usage_report import _latency_stats
 
 
@@ -19,6 +19,10 @@ def test_benchmark_summary_excludes_errors_from_latency():
     assert summary["errors"] == 1
     assert summary["ttft_ms"]["p50"] == 150
     assert summary["status_counts"] == {"200": 2, "503": 1}
+
+
+def test_benchmark_url_origin_supports_production_httpx():
+    assert url_origin("https://example.com/v1/messages") == "https://example.com/"
 
 
 def test_usage_latency_stats_exposes_gateway_phases():
