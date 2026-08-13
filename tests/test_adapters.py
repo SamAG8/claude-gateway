@@ -204,6 +204,14 @@ async def test_gemini_nonstream_shape(client, mock_engine):
                                      "totalTokenCount": 14}
 
 
+async def test_gemini_model_effort_suffix_reaches_engine(client, mock_engine):
+    r = await client.post("/v1beta/models/haiku:low:generateContent", headers=AUTH_G,
+                          json={"contents": [{"role": "user", "parts": [{"text": "hi"}]}]})
+    assert r.status_code == 200
+    assert mock_engine["req"].model == "haiku"
+    assert mock_engine["req"].effort_override == "low"
+
+
 async def test_gemini_stream_partials(client, mock_engine):
     r = await client.post("/v1beta/models/gemini-1.5-pro:streamGenerateContent?alt=sse",
                           headers=AUTH_G,

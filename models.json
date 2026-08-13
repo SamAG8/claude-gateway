@@ -18,7 +18,10 @@
     "gemini-3.1-pro": "opus",
     "claude-3-5-sonnet-latest": "sonnet",
     "claude-3-5-haiku-latest": "haiku",
-    "claude-3-opus-latest": "opus"
+    "claude-3-opus-latest": "opus",
+    "sonnet": "sonnet",
+    "opus": "opus",
+    "haiku": "haiku"
   },
   "effort": {
     "haiku": "low"

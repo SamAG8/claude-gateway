@@ -32,10 +32,15 @@ def key_is_valid(provided: str | None) -> bool:
 
 
 # Canonical meaning of each HTTP status the gateway emits — the single taxonomy.
-# "server" (500) and "unavailable" (502/504) are distinct: some protocols name them differently.
+# "server" (500) and "unavailable" (502/504/529) are distinct: some protocols name them differently.
+# 529 is Anthropic's "Overloaded" — kept as its own status (not folded into 502) so a
+# client can tell "back off and retry, the upstream is saturated" from "this request
+# is broken". It maps to the same canonical "unavailable" kind, so every protocol
+# still renders its own native envelope with no per-adapter change.
 _STATUS_KIND = {
     400: "invalid_request", 401: "auth", 403: "permission", 404: "not_found",
     413: "too_large", 429: "rate_limit", 500: "server", 502: "unavailable", 504: "unavailable",
+    529: "unavailable",
 }
 
 

@@ -17,7 +17,7 @@ from ..canonical import (
 )
 from ..content import image_block, pdf_to_text_block
 from ..errors import GatewayError, anthropic_error, key_is_valid
-from ..models import resolve_model
+from ..models import parse_model_spec
 from ..translate import join_texts, to_role
 from ._util import bearer_token, gen_id, sse
 
@@ -73,9 +73,11 @@ def _build(body: dict) -> CanonicalRequest:
     if not isinstance(messages, list) or not messages:
         raise GatewayError(400, "messages is required")
     requested = body.get("model", "") or "claude"
+    resolved, effort = parse_model_spec(requested)
     return CanonicalRequest(
-        model=resolve_model(requested),
+        model=resolved,
         requested_model=requested,
+        effort_override=effort,
         surface="anthropic",
         system=_system_text(body.get("system")),
         messages=_to_messages(messages),

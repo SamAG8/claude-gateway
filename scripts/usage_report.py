@@ -54,15 +54,11 @@ def _latency_stats(rows):
         value = _percentile([r.get(field) for r in rows], p)
         return round(value) if value is not None else None
     return {
-        "calls": len(rows),
-        "queue_p95_ms": pct("queue_wait_ms", 0.95),
+        "calls": len(rows), "queue_p95_ms": pct("queue_wait_ms", 0.95),
         "spawn_p95_ms": pct("spawn_ms", 0.95),
-        "ttft_p50_ms": pct("first_text_ms", 0.50),
-        "ttft_p95_ms": pct("first_text_ms", 0.95),
-        "ttft_p99_ms": pct("first_text_ms", 0.99),
-        "total_p50_ms": pct("total_ms", 0.50),
-        "total_p95_ms": pct("total_ms", 0.95),
-        "total_p99_ms": pct("total_ms", 0.99),
+        "ttft_p50_ms": pct("first_text_ms", 0.50), "ttft_p95_ms": pct("first_text_ms", 0.95),
+        "ttft_p99_ms": pct("first_text_ms", 0.99), "total_p50_ms": pct("total_ms", 0.50),
+        "total_p95_ms": pct("total_ms", 0.95), "total_p99_ms": pct("total_ms", 0.99),
     }
 
 

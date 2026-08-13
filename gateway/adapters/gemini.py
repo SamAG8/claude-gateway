@@ -8,7 +8,7 @@ from .. import models, protocol
 from ..canonical import CanonicalMessage, CanonicalRequest, Delta, Error, Result, Start, Stop, map_reason
 from ..content import document_block, image_block
 from ..errors import GatewayError, gemini_error, key_is_valid
-from ..models import resolve_model
+from ..models import parse_model_spec
 from ..translate import join_texts, to_role
 from ._util import sse
 
@@ -59,9 +59,11 @@ def _build(model_name: str, body: dict, stream: bool) -> CanonicalRequest:
     if not isinstance(contents, list) or not contents:
         raise GatewayError(400, "contents is required")
     gen = body.get("generationConfig") or {}
+    resolved, effort = parse_model_spec(model_name)
     return CanonicalRequest(
-        model=resolve_model(model_name),
+        model=resolved,
         requested_model=model_name,
+        effort_override=effort,
         surface="gemini",
         system=_system(body.get("systemInstruction") or body.get("system_instruction")),
         messages=_to_messages(contents),

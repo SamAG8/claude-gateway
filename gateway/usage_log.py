@@ -33,7 +33,7 @@ def record(*, outcome: str, req, elapsed: float,
            lane=None, queue_wait_ms=None, spawn_ms=None, stdin_ms=None,
            first_event_ms=None, first_text_ms=None, total_ms=None,
            prompt_bytes: int = 0, history_messages: int = 0,
-           mcp: bool = False) -> None:
+           mcp: bool = False, reason=None) -> None:
     if not config.USAGE_LOG:
         return
     try:
@@ -62,6 +62,9 @@ def record(*, outcome: str, req, elapsed: float,
             "num_docs": num_docs,
             "media_bytes": media_bytes,
         }
+        # Only present on non-success outcomes, so success records stay unchanged.
+        if reason:
+            rec["reason"] = reason
         rec["est_cost_usd"] = pricing.estimate_cost_usd(
             req.model, rec["input_tokens"], rec["output_tokens"],
             rec["cache_read"], rec["cache_creation"],

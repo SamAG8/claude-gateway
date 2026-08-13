@@ -30,26 +30,59 @@ logger = logging.getLogger("claude-gateway.engine")
 _semaphores: dict[str, asyncio.Semaphore] = {}
 
 
+_REASON_MAX = 200
+
+
+def _short_reason(reason: str | None) -> str | None:
+    """One-line, length-capped reason so a log line stays greppable."""
+    if not reason:
+        return None
+    return " ".join(str(reason).split())[:_REASON_MAX] or None
+
+
+def is_overloaded(message: str | None) -> bool:
+    """True when the upstream reported saturation rather than a request problem.
+
+    The CLI surfaces it as text ("API Error: 529 Overloaded…"), so text is all we
+    have to match on. Callers should back off rather than retry immediately: on
+    2026-07-29 a saturated upstream cost ~200s per attempt because the CLI retries
+    internally before giving up.
+    """
+    if not message:
+        return False
+    return "529" in message or "overloaded" in message.lower()
+
+
 def _log_outcome(outcome: str, req: CanonicalRequest, elapsed: float,
                  in_tok: int | None = None, out_tok: int | None = None,
                  cache_read: int | None = None, cache_creation: int | None = None,
                  num_images: int = 0, num_docs: int = 0, media_bytes: int = 0,
                  lane: str | None = None, queue_wait_ms: int | None = None,
-                 spawn_ms: int | None = None, stdin_ms: int | None = None,
-                 first_event_ms: int | None = None, first_text_ms: int | None = None,
-                 total_ms: int | None = None, prompt_bytes: int = 0,
-                 history_messages: int = 0, mcp: bool = False,
+                 spawn_ms: int | None = None,
+                 stdin_ms: int | None = None, first_event_ms: int | None = None,
+                 first_text_ms: int | None = None, total_ms: int | None = None,
+                 prompt_bytes: int = 0, history_messages: int = 0,
+                 mcp: bool = False,
+                 reason: str | None = None,
                  level: int = logging.INFO) -> None:
     """One line per invocation so errors and durations are visible in journald,
-    plus a structured JSONL record (when USAGE_LOG is set) for aggregation."""
+    plus a structured JSONL record (when USAGE_LOG is set) for aggregation.
+
+    ``reason`` is the upstream's own explanation of a non-success outcome. Log it:
+    without it an operator sees only the word "error" and has to reproduce the
+    request to find out what happened. That cost real time in the 2026-07-29
+    ConstraAP incident — five ~200s `error` lines with no hint that the cause was
+    `API Error: 529 Overloaded`, which was sitting in the 502 body all along.
+    """
     logger.log(level,
                "run_claude %s surface=%s model=%s lane=%s mcp=%s queue_ms=%s spawn_ms=%s "
                "stdin_ms=%s first_event_ms=%s first_text_ms=%s total_ms=%s "
-               "elapsed=%.1fs in=%s out=%s cache_read=%s cache_write=%s imgs=%s docs=%s",
+               "elapsed=%.1fs in=%s out=%s cache_read=%s cache_write=%s imgs=%s docs=%s%s",
                outcome, req.surface or "-", req.model, lane or "-", mcp, queue_wait_ms,
                spawn_ms, stdin_ms, first_event_ms, first_text_ms, total_ms,
                elapsed, in_tok, out_tok,
-               cache_read, cache_creation, num_images, num_docs)
+               cache_read, cache_creation, num_images, num_docs,
+               f" reason={_short_reason(reason)}" if reason else "")
     usage_log.record(outcome=outcome, req=req, elapsed=elapsed,
                      input_tokens=in_tok, output_tokens=out_tok,
                      cache_read=cache_read, cache_creation=cache_creation,
@@ -58,7 +91,8 @@ def _log_outcome(outcome: str, req: CanonicalRequest, elapsed: float,
                      stdin_ms=stdin_ms, first_event_ms=first_event_ms,
                      first_text_ms=first_text_ms, total_ms=total_ms,
                      prompt_bytes=prompt_bytes, history_messages=history_messages,
-                     mcp=mcp)
+                     mcp=mcp,
+                     reason=_short_reason(reason))
 
 
 def _get_semaphore(lane: str) -> asyncio.Semaphore:
@@ -143,7 +177,7 @@ def build_argv(req: CanonicalRequest) -> list[str]:
         ]
     else:
         argv += ["--tools", ""]  # plain chat: no tools at all
-    effort = models.resolve_effort(req.model)
+    effort = req.effort_override or models.resolve_effort(req.model)
     if effort:
         argv += ["--effort", effort]
     if config.ISOLATION_MODE == "bare":
@@ -316,8 +350,8 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
         first_event_ms = None
         first_text_ms = None
 
-        # Close over phase timings so every terminal outcome is directly usable
-        # for P50/P95/P99 analysis without logging prompt content or credentials.
+        # Close over phase timings so every outcome is directly usable for
+        # percentile analysis without logging content or credentials.
         def _log(outcome, elapsed, *a, **kw):
             kw.setdefault("lane", lane)
             kw.setdefault("queue_wait_ms", queue_wait_ms)
@@ -410,14 +444,11 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                         cap_in = usage.get("input_tokens")
                         cap_cache_read = usage.get("cache_read_input_tokens", cap_cache_read)
                         cap_cache_creation = usage.get("cache_creation_input_tokens", cap_cache_creation)
-                        # A CLI invocation with MCP tools can contain several
-                        # internal model turns. Each turn has its own Anthropic
-                        # message_start/message_stop pair, but this HTTP request is
-                        # one public Messages API response. Exposing every internal
-                        # start creates an invalid SSE sequence for SDK clients:
-                        # message_start -> ... -> message_start. Open the public
-                        # message once and append text from later internal turns to
-                        # that same content block until the final CLI result.
+                        # MCP tool use can produce multiple internal Claude turns,
+                        # each with its own message_start/message_stop. This HTTP
+                        # request is one public Messages API response, so expose a
+                        # single Start and append later text deltas to it until the
+                        # final CLI result supplies the one public Stop.
                         if not started:
                             started = True
                             yield Start(model=msg.get("model"), input_tokens=usage.get("input_tokens", 0))
@@ -439,10 +470,18 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                 elif otype == "result":
                     if obj.get("is_error") or obj.get("subtype") != "success":
                         await process.wait()
-                        _log("error", loop.time() - start,
+                        msg = obj.get("result") or "upstream error"
+                        # An overloaded upstream is NOT a generic bad gateway: the
+                        # caller should back off and retry later, and conflating it
+                        # with 502 hid that for a long time. Surface 529 so clients
+                        # can branch on the status instead of grepping the message.
+                        overloaded = is_overloaded(msg)
+                        _log("overloaded" if overloaded else "error",
+                                     loop.time() - start,
                                      num_images=img_n, num_docs=doc_n, media_bytes=media_n,
+                                     reason=msg,
                                      level=logging.WARNING)
-                        yield Error(502, obj.get("result") or "upstream error")
+                        yield Error(529 if overloaded else 502, msg)
                         return
                     usage = obj.get("usage", {})
                     in_tok = usage.get("input_tokens", cap_in or 0)
@@ -472,6 +511,7 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                 msg = err.decode("utf-8", errors="replace").strip()[:500]
                 _log("no-output", loop.time() - start,
                              num_images=img_n, num_docs=doc_n, media_bytes=media_n,
+                             reason=msg,
                              level=logging.WARNING)
                 yield Error(502, msg or "no output from claude")
             else:
@@ -503,6 +543,7 @@ async def run_claude(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
                 pass
             _log("exception", loop.time() - start,
                          num_images=img_n, num_docs=doc_n, media_bytes=media_n,
+                         reason=str(e),
                          level=logging.ERROR)
             yield Error(500, str(e))
     finally:

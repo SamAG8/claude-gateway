@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Measure gateway end-to-end latency without printing prompts or credentials.
-
-Example:
-  python scripts/benchmark_latency.py https://host/v1/messages \
-    --model claude-haiku-4-5-20251001 --requests 20 --concurrency 2
-
-API_KEY is read from the environment by default. Set MCP_TOKEN only when the
-benchmark should intentionally measure the MCP path.
-"""
+"""Measure gateway latency without printing prompts, responses, or credentials."""
 import argparse
 import asyncio
 import json
@@ -31,20 +23,18 @@ def percentile(values, pct):
 
 
 def summarize(samples):
-    ok = [sample for sample in samples if sample["status"] == 200 and sample["ttft_ms"] is not None]
+    ok = [s for s in samples if s["status"] == 200 and s["ttft_ms"] is not None]
     def metric(field, pct):
-        value = percentile([sample[field] for sample in ok], pct)
+        value = percentile([s[field] for s in ok], pct)
         return round(value) if value is not None else None
     return {
-        "requests": len(samples),
-        "successful": len(ok),
-        "errors": len(samples) - len(ok),
+        "requests": len(samples), "successful": len(ok), "errors": len(samples) - len(ok),
         "status_counts": {str(code): sum(1 for s in samples if s["status"] == code)
                           for code in sorted({s["status"] for s in samples})},
-        "ttft_ms": {"p50": metric("ttft_ms", 0.50), "p95": metric("ttft_ms", 0.95),
-                    "p99": metric("ttft_ms", 0.99)},
-        "total_ms": {"p50": metric("total_ms", 0.50), "p95": metric("total_ms", 0.95),
-                     "p99": metric("total_ms", 0.99)},
+        "ttft_ms": {"p50": metric("ttft_ms", .50), "p95": metric("ttft_ms", .95),
+                    "p99": metric("ttft_ms", .99)},
+        "total_ms": {"p50": metric("total_ms", .50), "p95": metric("total_ms", .95),
+                     "p99": metric("total_ms", .99)},
     }
 
 
@@ -55,23 +45,15 @@ async def run(args):
     mcp_token = os.getenv(args.mcp_token_env, "") if args.mcp else ""
     if args.mcp and not mcp_token:
         raise SystemExit(f"--mcp requires ${args.mcp_token_env}")
-
-    headers = {
-        "x-api-key": api_key,
-        "content-type": "application/json",
-        "anthropic-version": "2023-06-01",
-    }
+    headers = {"x-api-key": api_key, "content-type": "application/json",
+               "anthropic-version": "2023-06-01"}
     if mcp_token:
         headers["x-mcp-token"] = mcp_token
-    payload = {
-        "model": args.model,
-        "max_tokens": args.max_tokens,
-        "stream": True,
-        "messages": [{"role": "user", "content": args.prompt}],
-    }
+    payload = {"model": args.model, "max_tokens": args.max_tokens, "stream": True,
+               "messages": [{"role": "user", "content": args.prompt}]}
     sem = asyncio.Semaphore(args.concurrency)
-    limits = httpx.Limits(max_connections=args.concurrency, max_keepalive_connections=args.concurrency)
-
+    limits = httpx.Limits(max_connections=args.concurrency,
+                          max_keepalive_connections=args.concurrency)
     async with httpx.AsyncClient(timeout=args.timeout, limits=limits) as client:
         async def one():
             async with sem:
@@ -91,13 +73,12 @@ async def run(args):
                 except (httpx.HTTPError, asyncio.TimeoutError):
                     return {"status": status, "ttft_ms": None,
                             "total_ms": round((time.perf_counter() - started) * 1000)}
-
         for _ in range(args.warmup):
             await one()
         samples = await asyncio.gather(*(one() for _ in range(args.requests)))
     result = {"url_origin": httpx.URL(args.url).copy_with(path="/").human_repr(),
-              "model": args.model, "mcp": bool(args.mcp),
-              "concurrency": args.concurrency, **summarize(samples)}
+              "model": args.model, "mcp": bool(args.mcp), "concurrency": args.concurrency,
+              **summarize(samples)}
     print(json.dumps(result, indent=2))
     return 0 if result["errors"] == 0 else 2
 

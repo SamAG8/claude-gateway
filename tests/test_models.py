@@ -102,6 +102,11 @@ def test_effort_none_when_unset(effort_models_file, monkeypatch):
     assert models.resolve_effort("haiku") == "low"    # still overridden
 
 
+def test_parse_model_spec_resolves_tier_and_per_request_effort(effort_models_file):
+    assert models.parse_model_spec("haiku:low") == ("haiku", "low")
+    assert models.parse_model_spec("gemini-3.1-flash-lite:high") == ("haiku", "high")
+
+
 def test_real_config_routes_fast_tier_to_haiku():
     """The shipped models.json routes the ConstraAP fast tier to haiku at low effort
     while the complex (pro) path stays on opus — issue #11 latency follow-up."""

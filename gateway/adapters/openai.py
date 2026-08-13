@@ -9,7 +9,7 @@ from .. import models, protocol
 from ..canonical import CanonicalMessage, CanonicalRequest, Delta, Error, Result, Start, Stop, map_reason
 from ..content import image_block, parse_data_uri
 from ..errors import GatewayError, key_is_valid, openai_error, openai_error_dict
-from ..models import resolve_model
+from ..models import parse_model_spec
 from ..translate import join_texts, to_role
 from ._util import bearer_token, gen_id, sse
 
@@ -55,9 +55,11 @@ def _build(body: dict) -> CanonicalRequest:
     if not canon:
         raise GatewayError(400, "at least one non-system message is required")
     requested = body.get("model", "") or "gpt-4o"
+    resolved, effort = parse_model_spec(requested)
     return CanonicalRequest(
-        model=resolve_model(requested),
+        model=resolved,
         requested_model=requested,
+        effort_override=effort,
         surface="openai",
         system=join_texts(system_parts),
         messages=canon,

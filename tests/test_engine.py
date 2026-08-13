@@ -70,6 +70,12 @@ def test_build_argv_non_haiku_uses_global_effort(monkeypatch):
     assert argv[argv.index("--effort") + 1] == "high"
 
 
+def test_build_argv_per_request_effort_overrides_model_default(monkeypatch):
+    monkeypatch.setattr(config, "EFFORT", "high")
+    argv = engine.build_argv(_req(model="haiku", effort_override="medium"))
+    assert argv[argv.index("--effort") + 1] == "medium"
+
+
 def test_build_argv_no_effort_when_global_unset(monkeypatch):
     monkeypatch.setattr(config, "EFFORT", "")
     assert "--effort" not in engine.build_argv(_req(model="opus"))
@@ -166,10 +172,6 @@ async def test_run_claude_yields_canonical_events(fake_claude):
 
 
 async def test_mcp_internal_turns_form_one_public_message(fake_claude):
-    """MCP tool loops may start several internal Claude messages. The gateway
-    must expose one public message lifecycle so Anthropic SDKs can consume it."""
-    from conftest import _line
-
     fake_claude["lines"] = [
         _line({"type": "stream_event", "event": {
             "type": "message_start", "message": {
@@ -214,6 +216,66 @@ async def test_run_claude_surfaces_cli_error(fake_claude):
     assert isinstance(events[-1], Error)
     assert events[-1].status == 502
     assert "boom" in events[-1].message
+
+
+# --- Overload (529) classification + reason logging ------------------------
+# Regression for the 2026-07-29 ConstraAP incident: a saturated upstream produced
+# five ~200s "error" log lines with no reason recorded, and the caller saw a
+# generic 502 it retried immediately — ~7 min of blocked work per click.
+
+_OVERLOADED_RESULT = (
+    "API Error: 529 Overloaded. This is a server-side issue, usually temporary — "
+    "try again in a moment."
+)
+OVERLOADED_LINES = [
+    _line({"type": "result", "subtype": "error_during_execution", "is_error": True,
+           "result": _OVERLOADED_RESULT}),
+]
+
+
+async def test_overloaded_upstream_yields_529(fake_claude):
+    fake_claude["lines"] = OVERLOADED_LINES
+    events = await _drain(_req())
+    assert isinstance(events[-1], Error)
+    assert events[-1].status == 529
+    assert "Overloaded" in events[-1].message
+
+
+async def test_overloaded_outcome_logs_reason(fake_claude, caplog):
+    fake_claude["lines"] = OVERLOADED_LINES
+    with caplog.at_level("WARNING", logger="claude-gateway.engine"):
+        await _drain(_req())
+    line = "\n".join(r.getMessage() for r in caplog.records)
+    assert "run_claude overloaded" in line
+    assert "529 Overloaded" in line, "the reason must reach the log, not only the body"
+
+
+async def test_generic_cli_error_still_logs_reason_and_502(fake_claude, caplog):
+    fake_claude["lines"] = ERROR_LINES
+    with caplog.at_level("WARNING", logger="claude-gateway.engine"):
+        events = await _drain(_req())
+    line = "\n".join(r.getMessage() for r in caplog.records)
+    assert events[-1].status == 502
+    assert "run_claude error" in line and "reason=boom" in line
+
+
+@pytest.mark.parametrize("msg,expected", [
+    ("API Error: 529 Overloaded", True),
+    ("Overloaded", True),
+    ("upstream is OVERLOADED right now", True),
+    ("boom", False),
+    ("API Error: 500 Internal", False),
+    (None, False),
+    ("", False),
+])
+def test_is_overloaded_classification(msg, expected):
+    assert engine.is_overloaded(msg) is expected
+
+
+def test_short_reason_collapses_and_caps():
+    assert engine._short_reason("a\n  b\tc") == "a b c"
+    assert len(engine._short_reason("x" * 500)) == engine._REASON_MAX
+    assert engine._short_reason(None) is None
 
 
 async def test_run_claude_stdin_is_written(fake_claude):
@@ -329,10 +391,9 @@ async def test_slot_released_on_success(fake_claude):
 
 
 async def test_two_users_run_concurrently_with_isolated_mcp_tokens(monkeypatch):
-    """Two Nimbus users get separate subprocess argv/stdin/streams and may use
-    heavy-lane capacity concurrently; neither user's MCP identity is reused."""
+    """Two users get separate subprocess streams and per-request MCP identity."""
     import asyncio as _asyncio
-    from conftest import FakeProcess, SUCCESS_LINES
+    from conftest import FakeProcess
 
     _reset_semaphores()
     monkeypatch.setattr(config, "MAX_CONCURRENT", 2)
@@ -364,12 +425,12 @@ async def test_two_users_run_concurrently_with_isolated_mcp_tokens(monkeypatch):
     req_b = _req(model="sonnet", mcp_token="user-b-token")
     events_a, events_b = await _asyncio.gather(_drain(req_a), _drain(req_b))
 
-    assert len(spawned) == 2  # both reached subprocess execution before either completed
+    assert len(spawned) == 2
     configs = []
     for call in spawned:
         argv = call["argv"]
         configs.append(json.loads(argv[argv.index("--mcp-config") + 1]))
-        assert call["proc"].stdin.written  # each process received its own request body
+        assert call["proc"].stdin.written
     auth_headers = {
         cfg["mcpServers"][config.MCP_SERVER_NAME]["headers"]["Authorization"]
         for cfg in configs
