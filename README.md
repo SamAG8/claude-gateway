@@ -155,14 +155,24 @@ The report groups P50/P95/P99 by model and plain/MCP path. Add `--mcp` with
 ## Deployment (CI/CD)
 
 Pushing to `main` runs the test suite on GitHub Actions and, when it's green,
-deploys over SSH to your server: pull the new commit, sync deps, restart the
-`claude-gateway` systemd service, and health-check it. The pipeline is
-[`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml); the server-side step
-is [`scripts/deploy.sh`](scripts/deploy.sh).
+deploys to production: a self-hosted runner **on the production host itself**
+(`clab-prod`, the box behind `https://ap.constralabs.ai/llm-gateway/`) runs the
+host's health-gated, self-rolling-back `deploy-app.sh`, which rebuilds the
+`claude-gateway` Docker image from this exact commit, stamps `REVISION`, and
+recreates the container. The job then asserts that `/health` reports that same
+commit, and records the result under
+[Deployments → production](https://github.com/SamAG8/claude-gateway/deployments).
+The pipeline is [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml).
 
-One-time setup — provisioning the server, generating the deploy SSH key, and
-adding the GitHub secrets (`DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, …) — is
-documented in **[docs/deployment.md](docs/deployment.md)**.
+"Is the fix I merged actually running?" is answered without SSH:
+
+```bash
+curl -s https://ap.constralabs.ai/llm-gateway/health
+# {"status":"ok","revision":"<short sha of main>","mcp":true,"pat_auth":true}
+```
+
+How the host is wired, and how to run a gateway of your own on a plain VM with
+`scripts/deploy.sh`, is in **[docs/deployment.md](docs/deployment.md)**.
 
 ## Known limitations (honesty)
 
