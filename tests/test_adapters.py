@@ -103,6 +103,47 @@ async def test_anthropic_pat_becomes_mcp_token(client, mock_engine, monkeypatch)
     assert mock_engine["req"].mcp_token == "cap_good"
 
 
+async def test_anthropic_no_mcp_sentinel_detaches_even_with_a_pat(client, mock_engine, monkeypatch):
+    """x-mcp-token: none means a BARE turn — no company data — although the PAT
+    would otherwise have doubled as the MCP identity. Nimbus needs it for an
+    agent working a page and for attachment analysis."""
+    from gateway import config, introspect
+
+    monkeypatch.setattr(config, "TOKEN_INTROSPECT_URL", "http://introspect.test")
+    monkeypatch.setattr(config, "MCP_SERVER_URL", "http://mcp.test")  # mcp_enabled()
+
+    async def fake_active(tok):
+        return tok == "cap_good"
+
+    monkeypatch.setattr(introspect, "token_is_active", fake_active)
+    for sentinel in ("none", "NONE", " none "):
+        await client.post(
+            "/v1/messages",
+            headers={"x-api-key": "cap_good", "x-mcp-token": sentinel},
+            json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert mock_engine["req"].mcp_token is None, sentinel
+
+    # An explicit token still wins, and an EMPTY header still falls back to the PAT.
+    await client.post("/v1/messages", headers={"x-api-key": "cap_good", "x-mcp-token": "cap_other"}, json={
+        "model": "x", "messages": [{"role": "user", "content": "hi"}]})
+    assert mock_engine["req"].mcp_token == "cap_other"
+    await client.post("/v1/messages", headers={"x-api-key": "cap_good", "x-mcp-token": ""}, json={
+        "model": "x", "messages": [{"role": "user", "content": "hi"}]})
+    assert mock_engine["req"].mcp_token == "cap_good"
+
+
+def test_resolve_mcp_token_is_the_whole_rule():
+    from gateway.adapters.anthropic import resolve_mcp_token
+
+    assert resolve_mcp_token(None, "cap_pat") == "cap_pat"
+    assert resolve_mcp_token("", "cap_pat") == "cap_pat"
+    assert resolve_mcp_token("cap_explicit", "cap_pat") == "cap_explicit"
+    assert resolve_mcp_token("none", "cap_pat") is None
+    assert resolve_mcp_token("none", None) is None
+    assert resolve_mcp_token(None, None) is None
+
+
 async def test_anthropic_image_reaches_engine(client, mock_engine):
     await client.post("/v1/messages", headers=AUTH_A, json={
         "model": "claude-sonnet-4-6", "max_tokens": 50, "messages": [{
@@ -343,3 +384,47 @@ async def test_unknown_model_does_not_error(client, mock_engine):
     assert r.status_code == 200
     # resolver fell back to default; engine still invoked
     assert mock_engine["req"].model == "sonnet"
+
+
+# --- /health -----------------------------------------------------------------
+
+
+async def test_health_names_the_build_and_what_it_can_attach(client, monkeypatch):
+    """A liveness probe that cannot say WHICH build is answering leaves
+    "is the fix I merged actually running?" unanswerable without SSH — and a
+    capability that exists in the repository but not in production looks exactly
+    like one that was never written."""
+    from gateway import config
+
+    monkeypatch.setattr(config, "MCP_SERVER_URL", "http://mcp.test")  # mcp_enabled()
+    monkeypatch.setattr(config, "TOKEN_INTROSPECT_URL", "http://introspect.test")
+
+    body = (await client.get("/health")).json()
+
+    assert body["status"] == "ok"
+    assert body["mcp"] is True
+    assert body["pat_auth"] is True
+    # A short SHA, or an honest "unknown" for a tarball deploy with no git.
+    assert isinstance(body["revision"], str) and body["revision"]
+
+    # Facts about the deployment, never its secrets.
+    leaked = {"api_key", "api_keys", "token", "mcp_server_url", "introspect_url"}
+    assert not (leaked & set(body)), body
+
+
+async def test_health_still_answers_when_the_revision_is_unknowable(client, monkeypatch):
+    """Not knowing which build is running is a fine answer; failing a health
+    check over it would take the service down for a cosmetic reason."""
+    import main
+
+    main.deployed_revision.cache_clear()
+    monkeypatch.setattr(main.subprocess, "run", _raise)
+
+    body = (await client.get("/health")).json()
+    assert body["status"] == "ok"
+    assert body["revision"] == "unknown"
+    main.deployed_revision.cache_clear()
+
+
+def _raise(*_a, **_k):
+    raise FileNotFoundError("git")

@@ -106,6 +106,18 @@ async def _authenticate(request: Request) -> tuple[JSONResponse | None, str | No
     return anthropic_error(401, "invalid credentials", "authentication_error"), None
 
 
+NO_MCP_SENTINEL = "none"
+
+
+def resolve_mcp_token(header: str | None, pat: str | None) -> str | None:
+    """The MCP identity for this turn: the header, else the PAT, else nothing —
+    unless the header is the sentinel, which detaches MCP regardless of the PAT."""
+    value = (header or "").strip()
+    if value.lower() == NO_MCP_SENTINEL:
+        return None
+    return value or pat or None
+
+
 @router.post("/v1/messages")
 async def messages(request: Request):
     err, pat = await _authenticate(request)
@@ -122,8 +134,15 @@ async def messages(request: Request):
     # Per-user MCP token: an explicit x-mcp-token header wins; otherwise the PAT we
     # authenticated with doubles as the MCP identity, so company data is scoped to
     # this user with no extra credential.
+    #
+    # The sentinel value "none" means DETACH: no MCP on this turn even though a
+    # PAT is present. An empty header fell through to the PAT, so a client had no
+    # way to ask for a bare turn — and Nimbus needs one for an agent working a
+    # page (the page must be its only tool, or it answers from the mailbox and
+    # never touches the tab) and for analysing an attachment written by an
+    # external sender. Case-insensitive; surrounding whitespace ignored.
     if config.mcp_enabled():
-        req.mcp_token = request.headers.get("x-mcp-token") or pat or None
+        req.mcp_token = resolve_mcp_token(request.headers.get("x-mcp-token"), pat)
     return await protocol.respond(req, _Formatter(req), request)
 
 
