@@ -412,6 +412,23 @@ async def test_health_names_the_build_and_what_it_can_attach(client, monkeypatch
     assert not (leaked & set(body)), body
 
 
+async def test_health_reads_the_stamped_revision_first(client, monkeypatch, tmp_path):
+    """The deploy that matters has no git: ConstraAP's `--gateway` step tars
+    this directory and rsyncs it with `--exclude .git`, so a REVISION file
+    written at packaging time is the only thing that can answer on the serving
+    box. Git is the fallback, not the source."""
+    import main
+
+    main.deployed_revision.cache_clear()
+    monkeypatch.setattr(main, "__file__", str(tmp_path / "main.py"))
+    (tmp_path / "REVISION").write_text("deadbee" + chr(10), encoding="utf-8")
+    # Git would answer differently if it were consulted at all.
+    monkeypatch.setattr(main.subprocess, "run", _raise)
+
+    assert (await client.get("/health")).json()["revision"] == "deadbee"
+    main.deployed_revision.cache_clear()
+
+
 async def test_health_still_answers_when_the_revision_is_unknowable(client, monkeypatch):
     """Not knowing which build is running is a fine answer; failing a health
     check over it would take the service down for a cosmetic reason."""
