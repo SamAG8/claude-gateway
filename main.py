@@ -52,24 +52,40 @@ app.include_router(gemini.router)
 
 @lru_cache(maxsize=1)
 def deployed_revision() -> str:
-    """The commit this process is running, or "unknown".
+    """The build this process is running, or "unknown".
 
-    scripts/deploy.sh does `git reset --hard <ref>` in the install directory, so
-    the checked-out HEAD *is* what is serving — reading it here cannot drift
-    from the code above it the way a hand-maintained version string would.
+    A REVISION file first, because THE DEPLOY THAT MATTERS HAS NO GIT. The
+    serving instance is packaged by ConstraAP's
+    `scripts/deploy-to-production.sh --gateway`, which tars this directory and
+    rsyncs it with `--exclude .git` — so a `git rev-parse` here would answer
+    "unknown" on the only box anybody cares about. The packaging step writes
+    the file; this reads it.
+
+    Git is the fallback, for a server bootstrapped by scripts/deploy.sh (which
+    does `git reset --hard`, making HEAD exactly what is serving) and for a
+    developer running uvicorn out of a checkout.
 
     Cached: a subprocess per health check would turn a liveness probe into a
     fork bomb under a load balancer.
     """
+    here = Path(__file__).resolve().parent
+
+    stamped = here / "REVISION"
+    try:
+        value = stamped.read_text(encoding="utf-8").strip()
+        if value:
+            return value
+    except OSError:
+        pass
+
     try:
         return subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            cwd=Path(__file__).resolve().parent,
-            capture_output=True, text=True, timeout=2, check=True,
+            cwd=here, capture_output=True, text=True, timeout=2, check=True,
         ).stdout.strip() or "unknown"
     except Exception:
-        # A tarball deploy, no git on PATH, a detached worktree. Not knowing is
-        # a fine answer; failing a health check over it is not.
+        # No REVISION file, no git. Not knowing is a fine answer; failing a
+        # health check over it is not.
         return "unknown"
 
 
