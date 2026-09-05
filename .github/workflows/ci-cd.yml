@@ -1,13 +1,21 @@
 name: CI/CD
 
-# Run tests on every PR to main and on pushes to main; deploy only when a push
-# to main has green tests. See docs/deployment.md for the one-time server setup
-# and the list of secrets this workflow expects.
+# Tests run on every PR and every push to main, on GitHub-hosted runners (this
+# repo is public, so those minutes are free). The deploy job runs ONLY for a
+# push to main, on the self-hosted runner `clab-prod-claude-gateway`, which
+# lives on the production host itself (clab-prod, Azure eastus2 — the box that
+# serves https://ap.constralabs.ai/llm-gateway/). The deploy is
+# /var/www/bin/deploy-app.sh, the same health-gated, self-rolling-back script
+# every stack on that host uses; this workflow adds nothing to it except the
+# REVISION stamp and a check that the build answering /health is the commit
+# that was pushed. Detail: docs/deployment.md here, and on the box
+# /var/www/OPERATIONS.md and /var/www/claude-gateway/docker/README.md.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -27,37 +35,55 @@ jobs:
         run: python -m pytest -q
 
   deploy:
-    name: Deploy to server
+    name: Deploy to production (clab-prod)
     needs: test
-    # DISABLED 2026-07-10: this job deployed to DEPLOY_HOST, which is NOT the
-    # gateway that actually serves ConstraAP/Nimbus/ConstraBid (127.0.0.1:8000 on
-    # constraap-server). It silently no-op'd the serving instance for ~6 weeks.
-    # The gateway is now vendored into the ConstraAP repo and deployed via that
-    # repo's pipeline: `./scripts/deploy-to-production.sh --gateway`. Tests still
-    # run on every push/PR (the `test` job above). Re-enable only if this repo
-    # regains a real deploy target. Was: `github.event_name == 'push' && ...main`.
-    if: false
-    runs-on: ubuntu-latest
-    # Optional: create a "production" Environment in repo settings to scope the
-    # deploy secrets and/or require a manual approval before this job runs.
-    environment: production
+    # A push to main, or a manual run from main. Never a pull_request: this
+    # repo is public and the self-hosted runner must never execute a fork's
+    # code. (Re-enabled 2026-09-06. The previous target, a GCP VM, was deleted
+    # on 2026-08-27; the gateway has run on clab-prod since 2026-08-14.)
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, clab-prod-claude-gateway]
+    # `environment:` is what creates the record under
+    # github.com/SamAG8/claude-gateway/deployments and marks it success/failure.
+    environment:
+      name: production
+      url: https://ap.constralabs.ai/llm-gateway/health
     # Never let two deploys run at once; queue them instead of overlapping.
     concurrency:
       group: production-deploy
       cancel-in-progress: false
+    timeout-minutes: 20
     steps:
-      - name: Deploy over SSH
-        # Pin to a release tag; bump deliberately (or pin to a commit SHA to harden).
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT || 22 }}
-          # Abort on the first failing command in the script below.
-          script_stop: true
-          # deploy.sh updates the checkout to this exact commit, syncs deps, and
-          # restarts the service — exiting non-zero (failing the job) if the
-          # /health probe doesn't come back up.
-          script: |
-            "${{ secrets.DEPLOY_PATH || '/home/gateway/claude-gateway' }}/scripts/deploy.sh" "${{ github.sha }}"
+      # No actions/checkout: deploy-app.sh owns the source clone at
+      # /var/www/claude-gateway/app and resets it to this exact SHA itself.
+      # REVISION is a Docker build-arg the stack's Dockerfile writes to
+      # /srv/gateway/REVISION, which is what /health reports.
+      - name: Deploy
+        env:
+          SHA: ${{ github.sha }}
+        run: REVISION="${SHA::7}" /var/www/bin/deploy-app.sh claude-gateway "$SHA"
+
+      # Pinned to the host's PRIVATE address on purpose: Azure does not hairpin
+      # a VM's own public IP (the request just times out), and --resolve
+      # bypasses /etc/hosts, so the host-wide mapping would not help either.
+      - name: Verify the build that answers is this commit
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          body="$(curl -sS --max-time 10 --resolve ap.constralabs.ai:443:10.60.1.4 \
+                    https://ap.constralabs.ai/llm-gateway/health)"
+          echo "$body"
+          python3 - "$body" "${SHA::7}" <<'PY'
+          import json, sys
+          h, want = json.loads(sys.argv[1]), sys.argv[2]
+          assert h.get("status") == "ok", h
+          assert h.get("revision") == want, f'serving {h.get("revision")!r}, pushed {want!r}'
+          assert h.get("mcp") is True and h.get("pat_auth") is True, h
+          PY
+
+      - name: Fail if anything on the host went unhealthy
+        run: |
+          bad="$(docker ps --filter health=unhealthy --format '{{.Names}}')"
+          [ -z "$bad" ] || { echo "unhealthy containers: $bad"; exit 1; }

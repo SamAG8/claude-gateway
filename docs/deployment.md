@@ -1,5 +1,82 @@
 # Deployment & CI/CD
 
+## Production — how it actually ships (since 2026-09-06)
+
+The serving instance is **not** a systemd service on a VM any more. Since
+2026-08-14 the gateway runs as the Docker container `claude-gateway` on the host
+`clab-prod` (Azure eastus2, `172.200.190.27`), behind that host's nginx at
+`https://ap.constralabs.ai/llm-gateway/`. It is the shared LLM relay for
+ConstraAP, ConstraBid staging, stbid and the Nimbus clients. The GCP VM the
+older sections below were written for (`constraap-server`) was deleted on
+2026-08-27, and the ConstraAP repo's `deploy-to-production.sh --gateway` path
+with it — **this repo is the deployment source again.**
+
+```
+git push origin main
+        │
+        ▼
+GitHub Actions ── test ──────────────────► python -m pytest   (GitHub-hosted, Python 3.14)
+   (.github/workflows/ci-cd.yml)             │  mocked engine, no claude CLI, no tokens
+        │                                    ▼ green
+        └── deploy (push to main only) ── self-hosted runner `clab-prod-claude-gateway`
+                                          ON the production host, user `deploy`
+                                            └─ REVISION=<sha7> /var/www/bin/deploy-app.sh claude-gateway <sha>
+                                                 tag rollback image → git reset --hard <sha> in
+                                                 /var/www/claude-gateway/app → docker compose build
+                                                 (Dockerfile writes /srv/gateway/REVISION from the
+                                                 build-arg) → up -d → /health gate over the Docker
+                                                 network → auto-rollback on failure → public probe
+                                               then: assert /health.revision == <sha7>, and that no
+                                               container on the host went unhealthy
+```
+
+The `environment: production` on the deploy job is what creates the entries at
+<https://github.com/SamAG8/claude-gateway/deployments> and marks them
+success/failure. Verify a deploy from anywhere, no SSH needed:
+
+```bash
+curl -s https://ap.constralabs.ai/llm-gateway/health
+# {"status":"ok","revision":"<short sha>","mcp":true,"pat_auth":true}
+```
+
+`revision` must equal `git rev-parse --short origin/main`; `unknown` means the
+image was built without the `REVISION` build-arg (a manual `deploy-app.sh` run
+without `REVISION=…` in its environment does exactly that — honest, but fix it by
+re-running with the variable set).
+
+What lives where:
+
+| | |
+|---|---|
+| Runner | `/home/deploy/actions-runner-claude-gateway`, systemd unit `actions.runner.SamAG8-claude-gateway.clab-prod-claude-gateway.service`, `Restart=always` drop-in |
+| Labels | `self-hosted, linux, x64, clab-prod-claude-gateway` — `runs-on` in the workflow must match |
+| Stack | `/var/www/claude-gateway/{app,docker}` — `app/` is a clone of this repo, `docker/` the compose file, Dockerfile and secrets |
+| Host runbooks | `/var/www/OPERATIONS.md` (CI/CD, runners, deploy/rollback), `/var/www/claude-gateway/docker/README.md` (everything stack-specific), `/var/www/AGENTS.md` (the rules) |
+
+Things the workflow deliberately does **not** do: check the repo out on the
+runner (`deploy-app.sh` owns the clone and resets it to the pushed SHA itself),
+touch secrets (`docker/secrets/claude-gateway.env`, mounted read-only into the
+container), or run on `pull_request` (the repo is public; a self-hosted runner
+must never execute a fork's code).
+
+Manual redeploy of `main`: Actions → CI/CD → Run workflow, or on the host
+`REVISION=$(git -C /var/www/claude-gateway/app rev-parse --short origin/main) sudo -u deploy -E /var/www/bin/deploy-app.sh claude-gateway`.
+
+Registering the runner again if it is ever removed follows the recipe in the
+host's `OPERATIONS.md` ("Rebuilding the runner"), substituting this repo's URL,
+the directory above and the labels above. It needs **admin** on this repo for
+the registration token.
+
+---
+
+## Running your own gateway on a plain VM (reference)
+
+Everything below this line describes the original standalone deployment — one
+VM, a `gateway` user, a systemd unit, `scripts/deploy.sh` over SSH. It is kept
+because it is still the simplest way to stand the gateway up somewhere else, but
+**it is not how production runs**, and the `DEPLOY_*` secrets it mentions are no
+longer used by the workflow.
+
 Push to `main` → GitHub runs the tests → if they pass, it SSHes into your server,
 pulls the new commit, updates deps, and restarts the systemd service.
 
