@@ -6,7 +6,10 @@ config log. Protocol routers (Anthropic / OpenAI / Gemini) are mounted here as
 they land.
 """
 import logging
+import subprocess
 from contextlib import asynccontextmanager
+from functools import lru_cache
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -47,9 +50,50 @@ app.include_router(openai.router)
 app.include_router(gemini.router)
 
 
+@lru_cache(maxsize=1)
+def deployed_revision() -> str:
+    """The commit this process is running, or "unknown".
+
+    scripts/deploy.sh does `git reset --hard <ref>` in the install directory, so
+    the checked-out HEAD *is* what is serving — reading it here cannot drift
+    from the code above it the way a hand-maintained version string would.
+
+    Cached: a subprocess per health check would turn a liveness probe into a
+    fork bomb under a load balancer.
+    """
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True, text=True, timeout=2, check=True,
+        ).stdout.strip() or "unknown"
+    except Exception:
+        # A tarball deploy, no git on PATH, a detached worktree. Not knowing is
+        # a fine answer; failing a health check over it is not.
+        return "unknown"
+
+
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    """Liveness, and WHICH BUILD is answering.
+
+    This used to return `{"status": "ok"}` and nothing else, which made a
+    reasonable question — "is the fix I merged actually running?" — impossible
+    to answer without SSH. A capability that exists in the repository and not in
+    production looks exactly like a capability that was never written, and the
+    x-mcp-token sentinel sat in that gap for three weeks.
+
+    `mcp` is here for the same reason: whether company data can be attached at
+    all is the single most consequential piece of this gateway's configuration,
+    and it was equally invisible. Both are facts about the deployment, not
+    secrets — no token, no URL, no key.
+    """
+    return {
+        "status": "ok",
+        "revision": deployed_revision(),
+        "mcp": config.mcp_enabled(),
+        "pat_auth": config.pat_auth_enabled(),
+    }
 
 
 if __name__ == "__main__":
