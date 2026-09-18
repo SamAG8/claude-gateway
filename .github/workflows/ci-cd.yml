@@ -91,5 +91,16 @@ jobs:
 
       - name: Fail if anything on the host went unhealthy
         run: |
-          bad="$(docker ps --filter health=unhealthy --format '{{.Names}}')"
+          # Scoped to COMPOSE-MANAGED containers on purpose. deploy-app starts a
+          # throwaway ':candidate' container for its own health gate, and other
+          # stacks' workflows do the same concurrently. An unscoped sweep sees those
+          # while they are still warming up and fails THIS deploy for a problem that
+          # belongs to another run - which is what happened on 2026-09-18 when four
+          # deploys ran at once and failed each other. Candidates are not
+          # compose-managed, so the label filter excludes them without weakening the
+          # check. (CDefApp's ci-cd.yml solves this differently, with a before/after
+          # snapshot; either approach is fine, an unscoped sweep is not.)
+          bad="$(docker ps --filter health=unhealthy \
+                            --filter label=com.docker.compose.project \
+                            --format '{{.Names}}')"
           [ -z "$bad" ] || { echo "unhealthy containers: $bad"; exit 1; }
