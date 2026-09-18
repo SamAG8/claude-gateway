@@ -5,7 +5,7 @@ name: CI/CD
 # push to main, on the self-hosted runner `clab-prod-claude-gateway`, which
 # lives on the production host itself (clab-prod, Azure eastus2 — the box that
 # serves https://ap.constralabs.ai/llm-gateway/). The deploy is
-# /var/www/bin/deploy-app.sh, the same health-gated, self-rolling-back script
+# /opt/constralabs/bin/deploy-app, the same health-gated, self-rolling-back script
 # every stack on that host uses; this workflow adds nothing to it except the
 # REVISION stamp and a check that the build answering /health is the commit
 # that was pushed. Detail: docs/deployment.md here, and on the box
@@ -63,7 +63,7 @@ jobs:
       - name: Deploy
         env:
           SHA: ${{ github.sha }}
-        run: REVISION="${SHA::7}" /var/www/bin/deploy-app.sh claude-gateway "$SHA"
+        run: REVISION="${SHA::7}" /opt/constralabs/bin/deploy-app claude-gateway "$SHA"
 
       # Pinned to the host's PRIVATE address on purpose: Azure does not hairpin
       # a VM's own public IP (the request just times out), and --resolve
