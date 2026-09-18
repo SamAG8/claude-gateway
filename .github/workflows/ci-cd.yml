@@ -72,7 +72,13 @@ jobs:
         env:
           SHA: ${{ github.sha }}
         run: |
-          body="$(curl -sS --max-time 10 --resolve ap.constralabs.ai:443:10.60.1.4 \
+          # DERIVED, never hardcoded. Two migrations in a row shipped a stale
+          # literal here, and because a failed public probe reads as 'not
+          # serving', it took good deploys down with it.
+          . /opt/constralabs/etc/host-facts.env 2>/dev/null || true
+          ip="${HOST_IP:-$(ip -4 route get 1.1.1.1 | awk '{print $7; exit}')}"
+          [ -n "$ip" ] || { echo "::error::cannot determine this host's address"; exit 1; }
+          body="$(curl -sS --max-time 10 --resolve "ap.constralabs.ai:443:$ip" \
                     https://ap.constralabs.ai/llm-gateway/health)"
           echo "$body"
           python3 - "$body" "${SHA::7}" <<'PY'
