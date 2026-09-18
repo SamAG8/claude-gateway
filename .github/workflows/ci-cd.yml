@@ -44,7 +44,7 @@ jobs:
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, clab-prod-claude-gateway]
+    runs-on: [self-hosted, constralabs-claude-gateway]
     # `environment:` is what creates the record under
     # github.com/SamAG8/claude-gateway/deployments and marks it success/failure.
     environment:
