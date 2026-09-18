@@ -2,8 +2,8 @@ name: CI/CD
 
 # Tests run on every PR and every push to main, on GitHub-hosted runners (this
 # repo is public, so those minutes are free). The deploy job runs ONLY for a
-# push to main, on the self-hosted runner `clab-prod-claude-gateway`, which
-# lives on the production host itself (clab-prod, Azure eastus2 — the box that
+# push to main, on the self-hosted runner `constralabs-claude-gateway`, which
+# lives on the production host itself (constralabs, Vultr — the box that
 # serves https://ap.constralabs.ai/llm-gateway/). The deploy is
 # /opt/constralabs/bin/deploy-app, the same health-gated, self-rolling-back script
 # every stack on that host uses; this workflow adds nothing to it except the
@@ -35,12 +35,12 @@ jobs:
         run: python -m pytest -q
 
   deploy:
-    name: Deploy to production (clab-prod)
+    name: Deploy to production (constralabs)
     needs: test
     # A push to main, or a manual run from main. Never a pull_request: this
     # repo is public and the self-hosted runner must never execute a fork's
     # code. (Re-enabled 2026-09-06. The previous target, a GCP VM, was deleted
-    # on 2026-08-27; the gateway has run on clab-prod since 2026-08-14.)
+    # on 2026-08-27; the gateway has run on constralabs since 2026-08-14.)
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && github.ref == 'refs/heads/main'
