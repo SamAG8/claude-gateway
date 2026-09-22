@@ -156,7 +156,8 @@ The report groups P50/P95/P99 by model and plain/MCP path. Add `--mcp` with
 
 Pushing to `main` runs the test suite on GitHub Actions and, when it's green,
 deploys to production: a self-hosted runner **on the production host itself**
-(`clab-prod`, the box behind `https://ap.constralabs.ai/llm-gateway/`) runs the
+(`155.138.144.164`, hostname `constralabs` — the box behind
+`https://ap.constralabs.ai/llm-gateway/`) runs the
 host's health-gated, self-rolling-back `deploy-app.sh`, which rebuilds the
 `claude-gateway` Docker image from this exact commit, stamps `REVISION`, and
 recreates the container. The job then asserts that `/health` reports that same
