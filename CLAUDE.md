@@ -26,7 +26,7 @@ RUN_LIVE=1 pytest tests/test_live_smoke.py   # hits the real claude CLI (costs t
 
 There is no build step and no linter configured.
 
-CI/CD runs on GitHub Actions (`.github/workflows/ci-cd.yml`): `pytest` on every PR and push to `main`, then an SSH deploy (`scripts/deploy.sh`: git reset → pip install → `systemctl restart claude-gateway` → `/health` gate) on green pushes to `main`. Server prep + secrets are in `docs/deployment.md`.
+CI/CD runs on GitHub Actions (`.github/workflows/ci-cd.yml`): `pytest` on every PR and push to `main`, then, on green pushes to `main`, a deploy on a **self-hosted runner on the production host — `155.138.144.164`, hostname `constralabs`** (`runs-on: [self-hosted, constralabs-claude-gateway]`). The deploy is the Docker stack `claude-gateway` rolled by `/opt/constralabs/bin/deploy-app`, which is health-gated and self-rolling-back; CI then verifies that the build answering `https://ap.constralabs.ai/llm-gateway/health` carries the `REVISION` of the commit that was pushed, and that `mcp` and `pat_auth` are true. There is no SSH step and no `systemctl` unit any more — `scripts/deploy.sh` and `claude-gateway.service` are historical. Server prep + secrets are in `docs/deployment.md`, and on the box in `/var/www/OPERATIONS.md` and `/var/www/claude-gateway/docker/README.md`.
 
 ## Architecture: one core, three adapters
 
@@ -34,12 +34,16 @@ The cardinal rule is **one shared engine + renderer, three thin adapters** — n
 
 ```
 adapter (protocol request → CanonicalRequest)
-  → protocol.respond(req, Formatter) → engine.run_claude() → CanonicalEvent stream
+  → protocol.respond(req, Formatter) → engine.run() → one of two engines
+                                          → CanonicalEvent stream
   → renderer dispatches each event to the Formatter → protocol response/SSE
 ```
 
 - **`gateway/canonical.py`** — the internal contract every adapter speaks to the core: `CanonicalRequest` / `CanonicalMessage` and the **typed** `CanonicalEvent` union (`Start` / `Delta` / `Stop` / `Error`), plus the drained `Result`. The engine **never imports an adapter**; adapters only ever hand the engine a `CanonicalRequest`.
-- **`gateway/engine.py`** — `run_claude(req)` builds the `claude` argv + stdin, spawns the subprocess under a concurrency semaphore with a per-invocation timeout, parses the `stream-json` JSONL output, and yields typed `CanonicalEvent`s. `collect(req)` drains that same generator into a `Result` for non-streaming callers.
+- **`gateway/engine.py`** — the **dispatcher**. `select_engine(req)` writes which engine answers and why onto the request (O(1): a model prefix, two model-map lookups, the final turn's block kinds); `run(req)` drives it; `collect(req)` drains it into a `Result` for non-streaming callers. It runs nothing itself.
+- **`gateway/engines/cli.py`** — the CLI engine: `run_claude(req)` builds the `claude` argv + stdin, spawns the subprocess in a lane with a per-invocation timeout, parses the `stream-json` JSONL output, and yields typed `CanonicalEvent`s. The only engine that can reach company data, because MCP is attached to the CLI.
+- **`gateway/engines/openrouter.py`** — the HTTP engine: answers models whose resolved id starts with `openrouter/` by streaming from OpenRouter. Same events out. It bills real money per token, and it has no tool loop. See `docs/adr/0001-tiered-engines.md`.
+- **`gateway/lanes.py`** — the keyed concurrency lanes (`fast`/`heavy` for the CLI, `http` for the other engine) and the bounded queue wait that turns saturation into a fast 503.
 - **`gateway/protocol.py`** — the **Renderer**: `respond(req, formatter)` / `stream_response` / `complete_response` drive the event stream once and own ordering, termination, and the stream-vs-`collect` split. The per-protocol **Formatter** (a small stateful class defined inside each adapter) is the only seam — it renders each event kind to SSE chunks and builds the non-streaming body. **Do not re-implement the event loop in an adapter; add/extend a Formatter.**
 - **`gateway/adapters/{anthropic,openai,gemini}.py`** — each is a FastAPI `APIRouter` that (1) validates that protocol's auth (`_unauthorized`), (2) translates the request into a `CanonicalRequest` (`_build`), (3) calls `protocol.respond` with its `_Formatter`. Wired into the app in `main.py`.
 - **`gateway/translate.py`** — shared request-translation helpers (`join_texts`, `to_role`). Protocol-specific content-block shapes (image/document/inline_data) stay in the adapters — that variation is a false seam if unified.
@@ -52,13 +56,14 @@ adapter (protocol request → CanonicalRequest)
 - **Contamination neutralization.** The engine must keep the gateway behaving like a clean model API, not the machine's coding assistant. Every invocation passes `--system-prompt` (client system or a default), `--setting-sources ""` (no user/project/local settings or `SessionStart` hooks), `--tools ""` (the empty string — **not** the word `none`, which the CLI parses as a tool name), `--no-session-persistence`, and runs in a throwaway `cwd` with no `CLAUDE.md`. `ISOLATION_MODE=bare` swaps to `--bare` (which then requires `ANTHROPIC_API_KEY`). The live smoke test asserts this: a trivial prompt returns small `input_tokens` with no leaked memory.
 - **Parsing the CLI stream.** Consume `stream_event.event` payloads (they are 1:1 with Anthropic's wire events): `message_start`→`start`, `content_block_delta`(`text_delta`)→`delta`, `message_delta`→capture stop_reason/output_tokens, final `result`→`stop` (or `error` if `is_error`/`subtype!=success`). Ignore `system`, `assistant`, `rate_limit_event`, and hook lines.
 - **Stateless multi-turn.** The CLI call is stateless; multi-turn requests flatten prior turns into a transcript prepended to the final user message. Only the **final** turn's images are sent natively — history images become `[image omitted]`.
-- **Accept-but-ignore.** `temperature`/`top_p`/`top_k`/`stop`/`max_tokens` and the native `tools` param are accepted and never error, but the CLI cannot enforce them. Don't invent CLI flags for them. (MCP tools are the exception — see MCP connector below — they are wired via `--mcp-config`, not the native `tools` param.)
+- **Routing is the model map's, constraints are the gateway's.** A client picks the model; `select_engine` only enforces what the client could not know, and records a `route_reason` every time it overrides them. **The MCP rule is hard**: a request carrying an MCP identity always goes to the CLI, because an engine with no tool loop answering a company-data turn produces an inverted answer, not merely a worse one. Never route around that.
+- **Accept-but-ignore.** `temperature`/`top_p`/`top_k`/`stop`/`max_tokens` and the native `tools` param are accepted and never error on the **CLI engine**, which cannot enforce them; the HTTP engine honours them. Don't invent CLI flags for them. (MCP tools are the exception — see MCP connector below — they are wired via `--mcp-config`, not the native `tools` param.)
 - **MCP connector (per-user).** When `MCP_SERVER_URL` is set and a request carries an `x-mcp-token` header, `build_argv` attaches that one remote MCP server via inline `--mcp-config`, scoped with `--strict-mcp-config` + `--allowedTools mcp__<name>` + `--permission-mode bypassPermissions`. Built-in tools stay disabled, so isolation holds; only the configured company-data server opens up, authenticated as the token's user. The token is per-request; the URL/name are gateway config. This is how a client (e.g. Nimbus) gives Claude live company-data access without a native tool API — the CLI calls the MCP tools and returns final text. Native API tool_use / function-calling *passthrough* (handing tool calls back to the API caller) is still not supported — client-side actions must be brokered by the caller.
 
 ## Testing approach
 
 Adapter and engine tests **mock, never call the real CLI**:
-- `tests/conftest.py` provides `fake_claude` (monkeypatches `asyncio.create_subprocess_exec` with a canned stream-json transcript — for engine tests) and `mock_engine` (monkeypatches `engine.run_claude` to yield canonical events and capture the produced `CanonicalRequest` — for adapter tests, with an httpx ASGI `client` fixture).
+- `tests/conftest.py` provides `fake_claude` (monkeypatches `asyncio.create_subprocess_exec` with a canned stream-json transcript — for engine tests) and `mock_engine` (monkeypatches `engine.run` to yield canonical events and capture the produced `CanonicalRequest` — for adapter tests, with an httpx ASGI `client` fixture).
 - When adding a protocol feature, assert the **exact** event/`data:` sequence and field names (e.g. OpenAI's `[DONE]` sentinel, Anthropic's `message_start..message_stop` order, Gemini's final partial carrying `finishReason`+`usageMetadata`).
 
 ## Conventions

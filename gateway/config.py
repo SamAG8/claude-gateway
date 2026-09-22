@@ -33,6 +33,10 @@ MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "5"))  # heavy lane (opus/sonne
 # Dedicated fast-lane capacity so interactive fast-tier (haiku) calls don't queue
 # behind long-running heavy extraction jobs. See models.is_fast_model + engine lanes.
 MAX_CONCURRENT_FAST = int(os.getenv("MAX_CONCURRENT_FAST", "3"))
+# The HTTP engine's own lane. Sized far higher than the CLI lanes because an
+# in-flight OpenRouter stream costs a socket, not a subprocess with its own CPU
+# and RAM on this host. See gateway/lanes.py for why it never shares with them.
+MAX_CONCURRENT_HTTP = int(os.getenv("MAX_CONCURRENT_HTTP", "20"))
 # Max seconds a request may wait to acquire its lane's semaphore slot before the
 # gateway gives up and returns a fast 503 ("saturated, retry") instead of letting
 # the client burn its whole timeout budget in an invisible queue. See engine.
@@ -72,6 +76,37 @@ EFFORT = os.getenv("EFFORT", "").strip()
 MAX_THINKING_TOKENS = int(os.getenv("MAX_THINKING_TOKENS")) if os.getenv("MAX_THINKING_TOKENS") else None
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+# --- OpenRouter engine (the second transport) ------------------------------
+# Unlike the CLI engine, which rides this machine's Claude login, OpenRouter bills
+# real money per token. It answers only models whose resolved id carries the
+# ``openrouter/`` prefix (see models.engine_for), so it is inert until a client
+# asks for one. Unset the key to switch the whole tier back to Claude without a
+# deploy — engine.select_engine reroutes and says so in route_reason.
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip().rstrip("/")
+# Idle-read timeout: the longest gap between two SSE chunks before we give up.
+# The upstream sends keepalive comment lines, so a silent connection really is dead.
+OPENROUTER_TIMEOUT = float(os.getenv("OPENROUTER_TIMEOUT", "60"))
+OPENROUTER_CONNECT_TIMEOUT = float(os.getenv("OPENROUTER_CONNECT_TIMEOUT", "5"))
+# How the upstream picks among its providers for a model. "latency" is the point
+# of this engine; set "" to leave the choice to OpenRouter's default (price).
+OPENROUTER_PROVIDER_SORT = os.getenv("OPENROUTER_PROVIDER_SORT", "latency").strip()
+# Fall back to the Claude model in claude_fallback when OpenRouter fails BEFORE the
+# first chunk. Never after: a half-streamed answer cannot be replaced. Set 0 if you
+# would rather see the failure than quietly reload the subscription during an
+# upstream outage — either way it is visible as route_reason in the usage log.
+OPENROUTER_FALLBACK = os.getenv("OPENROUTER_FALLBACK", "1").strip() not in ("0", "false", "no")
+# Open one connection at startup so the first real turn does not pay the TLS
+# handshake. Failure is ignored; it is a warm-up, not a health check.
+OPENROUTER_WARM = os.getenv("OPENROUTER_WARM", "1").strip() not in ("0", "false", "no")
+# Optional attribution shown on the OpenRouter dashboard.
+OPENROUTER_APP_TITLE = os.getenv("OPENROUTER_APP_TITLE", "").strip()
+OPENROUTER_REFERER = os.getenv("OPENROUTER_REFERER", "").strip()
+
+
+def openrouter_enabled() -> bool:
+    return bool(OPENROUTER_API_KEY)
 
 # --- MCP connector (per-user company data) ---------------------------------
 # When MCP_SERVER_URL is set, a request carrying a per-user token (the

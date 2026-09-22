@@ -3,9 +3,19 @@
 ## Production — how it actually ships (since 2026-09-06)
 
 The serving instance is **not** a systemd service on a VM any more. Since
-2026-08-14 the gateway runs as the Docker container `claude-gateway` on the host
-`clab-prod` (Azure eastus2, `172.200.190.27`), behind that host's nginx at
-`https://ap.constralabs.ai/llm-gateway/`. It is the shared LLM relay for
+2026-08-14 the gateway runs as the Docker container `claude-gateway` on the
+production host — **`155.138.144.164`, hostname `constralabs`** — behind that
+host's nginx at `https://ap.constralabs.ai/llm-gateway/`. Its files live in
+`/var/www/claude-gateway` (`app/` is the checkout, `docker/` holds the compose
+files and the secrets the container mounts at `/run/secrets/app.env`), and the
+host's own authority documents are `/var/www/OPERATIONS.md`, `ARCHITECTURE.md`
+and `AGENTS.md`.
+
+> **The address, written down because it was not.** This paragraph said
+> `clab-prod` / `172.200.190.27` and the credential notes said the same, while
+> the box answering every request was `155.138.144.164`. Nobody can act on a
+> production incident they cannot find, so: **there is one production host and
+> it is 155.138.144.164.** Verified 2026-09-22. It is the shared LLM relay for
 ConstraAP, ConstraBid staging, stbid and the Nimbus clients. The GCP VM the
 older sections below were written for (`constraap-server`) was deleted on
 2026-08-27, and the ConstraAP repo's `deploy-to-production.sh --gateway` path
@@ -18,9 +28,9 @@ git push origin main
 GitHub Actions ── test ──────────────────► python -m pytest   (GitHub-hosted, Python 3.14)
    (.github/workflows/ci-cd.yml)             │  mocked engine, no claude CLI, no tokens
         │                                    ▼ green
-        └── deploy (push to main only) ── self-hosted runner `clab-prod-claude-gateway`
+        └── deploy (push to main only) ── self-hosted runner `constralabs-claude-gateway`
                                           ON the production host, user `deploy`
-                                            └─ REVISION=<sha7> /var/www/bin/deploy-app.sh claude-gateway <sha>
+                                            └─ REVISION=<sha7> /opt/constralabs/bin/deploy-app claude-gateway <sha>
                                                  tag rollback image → git reset --hard <sha> in
                                                  /var/www/claude-gateway/app → docker compose build
                                                  (Dockerfile writes /srv/gateway/REVISION from the
@@ -36,7 +46,7 @@ success/failure. Verify a deploy from anywhere, no SSH needed:
 
 ```bash
 curl -s https://ap.constralabs.ai/llm-gateway/health
-# {"status":"ok","revision":"<short sha>","mcp":true,"pat_auth":true}
+# {"status":"ok","revision":"<short sha>","mcp":true,"pat_auth":true,"openrouter":true}
 ```
 
 `revision` must equal `git rev-parse --short origin/main`; `unknown` means the
@@ -48,8 +58,8 @@ What lives where:
 
 | | |
 |---|---|
-| Runner | `/home/deploy/actions-runner-claude-gateway`, systemd unit `actions.runner.SamAG8-claude-gateway.clab-prod-claude-gateway.service`, `Restart=always` drop-in |
-| Labels | `self-hosted, linux, x64, clab-prod-claude-gateway` — `runs-on` in the workflow must match |
+| Runner | `/home/deploy/actions-runner-claude-gateway`, systemd unit `actions.runner.SamAG8-claude-gateway.constralabs-claude-gateway.service`, `Restart=always` drop-in |
+| Labels | `self-hosted, linux, x64, constralabs-claude-gateway` — `runs-on` in the workflow must match |
 | Stack | `/var/www/claude-gateway/{app,docker}` — `app/` is a clone of this repo, `docker/` the compose file, Dockerfile and secrets |
 | Host runbooks | `/var/www/OPERATIONS.md` (CI/CD, runners, deploy/rollback), `/var/www/claude-gateway/docker/README.md` (everything stack-specific), `/var/www/AGENTS.md` (the rules) |
 

@@ -65,14 +65,15 @@ def _latency_stats(rows):
 def _print_latency(rows):
     groups = defaultdict(list)
     for row in rows:
-        groups[f"{row.get('model') or '-'}|{'mcp' if row.get('mcp') else 'plain'}"].append(row)
-    print("\nLatency by model and MCP (milliseconds):")
-    print(f"  {'key':<28} {'calls':>6} {'q95':>7} {'sp95':>7} "
+        groups[f"{row.get('model') or '-'}|{row.get('engine') or 'cli'}|"
+               f"{'mcp' if row.get('mcp') else 'plain'}"].append(row)
+    print("\nLatency by model, engine and MCP (milliseconds):")
+    print(f"  {'key':<44} {'calls':>6} {'q95':>7} {'sp95':>7} "
           f"{'tt50':>7} {'tt95':>7} {'tt99':>7} {'tot50':>7} {'tot95':>7} {'tot99':>7}")
     for key, grouped in sorted(groups.items()):
         s = _latency_stats(grouped)
         val = lambda name: "-" if s[name] is None else str(s[name])
-        print(f"  {key:<28} {s['calls']:>6} {val('queue_p95_ms'):>7} {val('spawn_p95_ms'):>7} "
+        print(f"  {key:<44} {s['calls']:>6} {val('queue_p95_ms'):>7} {val('spawn_p95_ms'):>7} "
               f"{val('ttft_p50_ms'):>7} {val('ttft_p95_ms'):>7} {val('ttft_p99_ms'):>7} "
               f"{val('total_p50_ms'):>7} {val('total_p95_ms'):>7} {val('total_p99_ms'):>7}")
 
@@ -131,7 +132,10 @@ def main():
            "cw": sum(r.get("cache_creation", 0) for r in rows),
            "cost": sum((r.get("est_cost_usd") or 0.0) for r in rows),
            "docs": sum(r.get("num_docs", 0) for r in rows),
-           "imgs": sum(r.get("num_images", 0) for r in rows)}
+           "imgs": sum(r.get("num_images", 0) for r in rows),
+           # The real charge, present only on rows a paid engine answered.
+           "cash": sum((r.get("cost_usd") or 0.0) for r in rows),
+           "prompt": sorted(r.get("prompt_bytes", 0) for r in rows)}
     prompt_total = tot["in"] + tot["cr"] + tot["cw"]
     hit = (tot["cr"] / prompt_total * 100) if prompt_total else 0.0
 
@@ -145,9 +149,28 @@ def main():
     print(f"  output            : {_fmt_int(tot['out'])} tok")
     print(f"  cache hit ratio   : {hit:.1f}%  (cache_read / total prompt tokens)")
     print(f"  native docs/imgs  : {tot['docs']} docs, {tot['imgs']} images")
-    print(f"  reference cost    : ${tot['cost']:.3f}  (subscription = not billed; see pricing.py)")
+    print(f"  reference cost    : ${tot['cost']:.3f}  (reference only; see pricing.py)")
+
+    # The split that matters once a second engine exists: one of these is paid for
+    # by a subscription and one is paid for in money.
+    sub = [r for r in rows if (r.get("engine") or "cli") == "cli"]
+    cash = [r for r in rows if (r.get("engine") or "cli") != "cli"]
+    print(f"  subscription (cli): {_fmt_int(len(sub))} calls, "
+          f"ref ${sum((r.get('est_cost_usd') or 0.0) for r in sub):.3f}")
+    print(f"  cash (http)       : {_fmt_int(len(cash))} calls, "
+          f"actual ${tot['cash']:.4f}")
+    if tot["prompt"]:
+        print(f"  prompt bytes p50  : {_fmt_int(_percentile(tot['prompt'], 50) or 0)}")
 
     _print_bucket("By model:", _bucket(rows, "model"))
+    _print_bucket("By engine:", _bucket(rows, "engine"))
+    # Non-null only when a constraint overrode the client's chosen engine. A large
+    # count here means the routing is not reaching the engine it was aimed at, and
+    # the key says which rule caught it.
+    rerouted = [r for r in rows if r.get("route_reason")]
+    if rerouted:
+        _print_bucket("By route reason (rerouted calls only):",
+                      _bucket(rerouted, "route_reason"))
     _print_bucket("By surface:", _bucket(rows, "surface"))
     _print_bucket("By outcome:", _bucket(rows, "outcome"))
     _print_latency(rows)

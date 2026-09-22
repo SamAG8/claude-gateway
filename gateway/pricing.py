@@ -48,10 +48,21 @@ def _load() -> dict:
 _TABLE = _load()
 
 
+# Keys that are table metadata, not model families.
+_NON_FAMILY = {"cache_read_mult", "cache_write_mult"}
+
+
 def _family(model: str | None) -> str | None:
+    """The priced family whose key appears in this model id, longest key first.
+
+    Driven by the table rather than a hard-coded trio, so a non-Claude engine's
+    models are priced by editing pricing.json. Longest-first matters once keys can
+    overlap: "glm-5.3-flash" must not be priced as "glm-5.3".
+    """
     m = (model or "").lower()
-    for fam in ("opus", "sonnet", "haiku"):
-        if fam in m:
+    families = [k for k, v in _TABLE.items() if k not in _NON_FAMILY and isinstance(v, dict)]
+    for fam in sorted(families, key=len, reverse=True):
+        if fam.lower() in m:
             return fam
     return None
 

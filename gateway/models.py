@@ -113,6 +113,42 @@ def resolve_max_thinking_tokens(resolved_model: str) -> int | None:
     return config.MAX_THINKING_TOKENS
 
 
+# A resolved id carrying this prefix is answered by the HTTP engine, not the CLI.
+# The prefix is also a passthrough_prefix in models.json, so `openrouter/<vendor>/
+# <model>` reaches the gateway unmapped and a new upstream model needs no code.
+OPENROUTER_PREFIX = "openrouter/"
+
+
+def engine_for(resolved_model: str) -> str:
+    """Which engine answers a resolved model id: ``"openrouter"`` or ``"cli"``.
+
+    The model map is the routing policy. Putting the engine in the id rather than
+    in a second table means one hot-reloadable edit re-points a tier, and a client
+    that asks for a model by name has already said which engine it wants.
+    """
+    return "openrouter" if (resolved_model or "").startswith(OPENROUTER_PREFIX) else "cli"
+
+
+def claude_fallback(resolved_model: str) -> str:
+    """The Claude model that answers when a constraint forces a non-CLI id back.
+
+    A reroute (company data attached, a native document, the engine switched off)
+    is not a statement about how hard the question is, so the fallback matches the
+    tier the caller was already willing to accept rather than escalating.
+    """
+    table = _load().get("claude_fallback", {})
+    return table.get(resolved_model) or _default_model(_load())
+
+
+def is_text_only(resolved_model: str) -> bool:
+    """True when the upstream model cannot accept images.
+
+    Table-driven (``text_only`` in the model map) rather than hard-coded, so a
+    later vision-capable tier is a config edit and not a release.
+    """
+    return resolved_model in _load().get("text_only", [])
+
+
 def is_fast_model(resolved_model: str) -> bool:
     """True if a resolved --model belongs to the latency-sensitive fast tier.
 

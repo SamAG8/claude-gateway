@@ -152,3 +152,35 @@ def test_is_fast_model_configurable(tmp_path, monkeypatch):
     models._cache.update(mtime=None, path=None, data=None)
     assert models.is_fast_model("sonnet") is True
     assert models.is_fast_model("opus") is False
+
+
+# ---- the model map is the routing policy --------------------------------
+
+def test_the_shipped_config_reaches_the_http_engine():
+    """The aliases a client actually sends. If these break, the second engine is
+    unreachable and every GLM turn silently answers from Claude instead."""
+    assert models.resolve_model("glm-flash") == "openrouter/z-ai/glm-5.3-flash"
+    assert models.resolve_model("glm") == "openrouter/z-ai/glm-5.3"
+    assert models.engine_for(models.resolve_model("glm-flash")) == "openrouter"
+    assert models.engine_for("sonnet") == "cli"
+    assert models.engine_for("claude-opus-4-8") == "cli"
+
+
+def test_an_unmapped_openrouter_id_passes_straight_through():
+    """A new upstream model is a client-side change, not a gateway release."""
+    assert models.resolve_model("openrouter/some/new-model") == "openrouter/some/new-model"
+
+
+def test_each_tier_names_the_claude_that_covers_for_it():
+    assert models.claude_fallback("openrouter/z-ai/glm-5.3-flash") == "haiku"
+    assert models.claude_fallback("openrouter/z-ai/glm-5.3") == "sonnet"
+
+
+def test_the_text_only_tier_is_declared_as_such():
+    assert models.is_text_only("openrouter/z-ai/glm-5.3") is True
+    assert models.is_text_only("openrouter/z-ai/glm-5.3-flash") is False
+
+
+def test_operational_policy_reaches_openrouter_ids_by_exact_match():
+    assert models.resolve_max_thinking_tokens("openrouter/z-ai/glm-5.3-flash") == 0
+    assert models.resolve_effort("openrouter/z-ai/glm-5.3-flash") == "low"

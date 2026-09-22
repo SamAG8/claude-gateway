@@ -1,8 +1,25 @@
 {
-  "_comment": "Reference USD per 1M tokens for usage_report cost estimates. NOT a bill — the gateway runs on a subscription by default (see gateway/pricing.py). Edit to match current Anthropic pricing; matched by substring of the resolved model id.",
-  "opus":   { "in": 5.0, "out": 25.0 },
-  "sonnet": { "in": 3.0, "out": 15.0 },
-  "haiku":  { "in": 1.0, "out": 5.0 },
+  "_comment": "Reference USD per 1M tokens for usage_report cost estimates. NOT a bill for the CLI engine \u2014 that one runs on a subscription (see gateway/pricing.py). The OpenRouter engine DOES bill, and reports its real charge as cost_usd in the usage log; the figures here are only a reference when it does not. Matched by the longest table key appearing in the resolved model id.",
+  "opus": {
+    "in": 5.0,
+    "out": 25.0
+  },
+  "sonnet": {
+    "in": 3.0,
+    "out": 15.0
+  },
+  "haiku": {
+    "in": 1.0,
+    "out": 5.0
+  },
   "cache_read_mult": 0.1,
-  "cache_write_mult": 1.25
+  "cache_write_mult": 1.25,
+  "glm-5.3-flash": {
+    "in": 0.15,
+    "out": 0.5
+  },
+  "glm-5.3": {
+    "in": 1.0,
+    "out": 3.0
+  }
 }

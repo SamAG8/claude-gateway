@@ -445,3 +445,80 @@ async def test_health_still_answers_when_the_revision_is_unknowable(client, monk
 
 def _raise(*_a, **_k):
     raise FileNotFoundError("git")
+
+
+# ====================== Hot path: nothing slow runs inline ======================
+
+async def test_pdf_flatten_does_not_block_the_loop(client, mock_engine, monkeypatch):
+    """A slow PDF extraction must not stall other in-flight requests.
+
+    pdfplumber is synchronous and can run for seconds on a real document. Run
+    inline it froze the whole gateway for that long — every other stream, before
+    the first token of any of them. Off the loop, a second request overtakes it.
+    """
+    import asyncio
+    import time
+
+    from gateway.adapters import anthropic as anthropic_adapter
+
+    order: list[str] = []
+
+    def slow_flatten(data):
+        time.sleep(0.4)  # blocking on purpose: this is what a real extraction does
+        order.append("pdf")
+        return {"type": "text", "text": "flattened"}
+
+    monkeypatch.setattr(anthropic_adapter, "pdf_to_text_block", slow_flatten)
+
+    async def with_pdf():
+        return await client.post("/v1/messages", headers=AUTH_A, json={
+            "model": "sonnet", "max_tokens": 50,
+            "messages": [{"role": "user", "content": [
+                {"type": "document", "source": {
+                    "type": "base64", "media_type": "application/pdf", "data": PDF_B64}}]}]})
+
+    async def plain():
+        await asyncio.sleep(0.05)  # start second, finish first
+        r = await client.post("/v1/messages", headers=AUTH_A, json={
+            "model": "sonnet", "max_tokens": 50,
+            "messages": [{"role": "user", "content": "hi"}]})
+        order.append("plain")
+        return r
+
+    slow, fast = await asyncio.gather(with_pdf(), plain())
+    assert slow.status_code == 200 and fast.status_code == 200
+    assert order == ["plain", "pdf"], "the plain turn waited for the PDF extraction"
+
+
+# ====================== The wire shape is engine-independent ======================
+
+async def test_a_glm_request_streams_the_same_frames_as_a_claude_one(client, mock_engine):
+    """The extension parses frames, not prose, and throws on an unexpected order.
+    Whichever engine answered, the Anthropic surface must look identical."""
+    r = await client.post("/v1/messages", headers=AUTH_A, json={
+        "model": "glm-flash", "max_tokens": 50, "stream": True,
+        "messages": [{"role": "user", "content": "hi"}]})
+    types = [json.loads(e)["type"] for e in sse_events(r.text)]
+    assert types == ["message_start", "content_block_start", "ping",
+                     "content_block_delta", "content_block_delta",
+                     "content_block_stop", "message_delta", "message_stop"]
+
+
+async def test_message_delta_reports_input_tokens_too(client, mock_engine):
+    """The HTTP engine cannot know the prompt size until its final chunk, so
+    message_start carries a zero. Without this the extension's own usage meter
+    bills every such turn as zero input."""
+    r = await client.post("/v1/messages", headers=AUTH_A, json={
+        "model": "glm-flash", "max_tokens": 50, "stream": True,
+        "messages": [{"role": "user", "content": "hi"}]})
+    delta = next(json.loads(e) for e in sse_events(r.text)
+                 if json.loads(e)["type"] == "message_delta")
+    assert delta["usage"] == {"input_tokens": 11, "output_tokens": 3}
+
+
+async def test_health_says_whether_the_second_engine_is_reachable(client, monkeypatch):
+    from gateway import config
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "or-test-key")
+    assert (await client.get("/health")).json()["openrouter"] is True
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "")
+    assert (await client.get("/health")).json()["openrouter"] is False

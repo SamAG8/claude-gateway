@@ -156,7 +156,8 @@ The report groups P50/P95/P99 by model and plain/MCP path. Add `--mcp` with
 
 Pushing to `main` runs the test suite on GitHub Actions and, when it's green,
 deploys to production: a self-hosted runner **on the production host itself**
-(`clab-prod`, the box behind `https://ap.constralabs.ai/llm-gateway/`) runs the
+(`155.138.144.164`, hostname `constralabs` — the box behind
+`https://ap.constralabs.ai/llm-gateway/`) runs the
 host's health-gated, self-rolling-back `deploy-app.sh`, which rebuilds the
 `claude-gateway` Docker image from this exact commit, stamps `REVISION`, and
 recreates the container. The job then asserts that `/health` reports that same
@@ -176,12 +177,20 @@ How the host is wired, and how to run a gateway of your own on a plain VM with
 
 ## Known limitations (honesty)
 
-The CLI does not expose sampling controls, so `temperature` / `top_p` / `top_k` /
-`stop` / `n>1` / `logprobs` are **accepted but ignored**, and `max_tokens` is not
-strictly enforced. Tool / function calling is accepted but ignored (no error).
-Multi-turn history is replayed as a flattened transcript, and images in prior turns
-are dropped to `[image omitted]` (the final turn's images are sent natively). Usage
-`prompt_tokens` reflects the CLI's accounting.
+These limits belong to the **CLI engine**, which answers every model except the
+`openrouter/` tier. It does not expose sampling controls, so `temperature` /
+`top_p` / `top_k` / `stop` / `n>1` / `logprobs` are **accepted but ignored**, and
+`max_tokens` is not strictly enforced. Tool / function calling is accepted but
+ignored (no error). Multi-turn history is replayed as a flattened transcript, and
+images in prior turns are dropped to `[image omitted]` (the final turn's images are
+sent natively). Usage `prompt_tokens` reflects the CLI's accounting.
+
+The **HTTP engine** (`glm-flash` / `glm`, see ADR-0001) differs in three ways worth
+knowing: `max_tokens`, `temperature`, `top_p` and `stop` are **honoured** there;
+history is sent as real turns rather than a transcript; and it has no tool loop, so
+any request carrying an MCP identity is rerouted to Claude rather than answered
+without company data. It also bills real money per token, and reports what it was
+actually charged as `cost_usd` in the usage log.
 
 Each request is a fresh isolated CLI process. A persistent interactive worker
 would mix sessions/credentials and does not expose the stateless stream-json API
