@@ -1,8 +1,9 @@
 """The internal contract every adapter speaks to the core engine.
 
 Adapters translate their protocol's request into a CanonicalRequest, call
-``engine.run_claude``, and format the yielded CanonicalEvents back into their
-protocol's response. The engine never imports an adapter.
+``engine.run``, and format the yielded CanonicalEvents back into their protocol's
+response. The engine never imports an adapter, and an adapter never learns which
+engine answered.
 """
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -41,6 +42,10 @@ class CanonicalRequest:
     # know the resolved model's engine and must not second-guess the constraints.
     engine: str = "cli"
     route_reason: Optional[str] = None
+    # Milliseconds spent authenticating before any engine was chosen. Logged, not
+    # acted on: it is the one pre-engine cost that can be a round trip, and
+    # without it a slow turn cannot be attributed.
+    introspect_ms: Optional[int] = None
 
 
 # CanonicalEvent: the typed contract the engine yields to every adapter. The four

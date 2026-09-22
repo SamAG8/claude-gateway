@@ -1,4 +1,6 @@
 """Anthropic Messages adapter — POST /v1/messages (issue #1 §9a)."""
+import asyncio
+import time
 from typing import Iterable
 
 from fastapi import APIRouter, Request
@@ -40,7 +42,7 @@ def _system_text(system) -> str | None:
     return None
 
 
-def _to_messages(messages) -> list[CanonicalMessage]:
+async def _to_messages(messages) -> list[CanonicalMessage]:
     out = []
     for m in messages:
         content = m.get("content")
@@ -60,7 +62,12 @@ def _to_messages(messages) -> list[CanonicalMessage]:
                 elif bt == "document":
                     src = b.get("source", {})
                     if src.get("type") == "base64" and src.get("media_type") == "application/pdf":
-                        blocks.append(pdf_to_text_block(src.get("data", "")))
+                        # Off the event loop. pdfplumber is synchronous and can run
+                        # for seconds on a large document; inline, it froze every
+                        # other in-flight stream on this gateway for that long —
+                        # before the first token of the request that asked for it.
+                        blocks.append(await asyncio.to_thread(
+                            pdf_to_text_block, src.get("data", "")))
                     else:
                         raise GatewayError(400, "unsupported document source")
                 # tool_use / tool_result etc. are accepted and ignored
@@ -68,7 +75,7 @@ def _to_messages(messages) -> list[CanonicalMessage]:
     return out
 
 
-def _build(body: dict) -> CanonicalRequest:
+async def _build(body: dict) -> CanonicalRequest:
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
         raise GatewayError(400, "messages is required")
@@ -80,7 +87,7 @@ def _build(body: dict) -> CanonicalRequest:
         effort_override=effort,
         surface="anthropic",
         system=_system_text(body.get("system")),
-        messages=_to_messages(messages),
+        messages=await _to_messages(messages),
         max_tokens=body.get("max_tokens") or 4096,
         stream=bool(body.get("stream", False)),
         temperature=body.get("temperature"),
@@ -120,7 +127,12 @@ def resolve_mcp_token(header: str | None, pat: str | None) -> str | None:
 
 @router.post("/v1/messages")
 async def messages(request: Request):
+    # Timed because introspection is the first thing that can cost a round trip,
+    # and it happens before any engine is even chosen — so a slow turn whose time
+    # went here looks identical in the usage log to one the model was slow on.
+    auth_t = time.monotonic()
     err, pat = await _authenticate(request)
+    introspect_ms = int((time.monotonic() - auth_t) * 1000)
     if err is not None:
         return err
     try:
@@ -128,7 +140,7 @@ async def messages(request: Request):
     except Exception:
         return anthropic_error(400, "invalid JSON body")
     try:
-        req = _build(body)
+        req = await _build(body)
     except GatewayError as e:
         return anthropic_error(e.status, e.message, e.err_type)
     # Per-user MCP token: an explicit x-mcp-token header wins; otherwise the PAT we
@@ -143,6 +155,7 @@ async def messages(request: Request):
     # external sender. Case-insensitive; surrounding whitespace ignored.
     if config.mcp_enabled():
         req.mcp_token = resolve_mcp_token(request.headers.get("x-mcp-token"), pat)
+    req.introspect_ms = introspect_ms
     return await protocol.respond(req, _Formatter(req), request)
 
 

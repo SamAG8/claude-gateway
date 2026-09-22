@@ -445,3 +445,46 @@ async def test_health_still_answers_when_the_revision_is_unknowable(client, monk
 
 def _raise(*_a, **_k):
     raise FileNotFoundError("git")
+
+
+# ====================== Hot path: nothing slow runs inline ======================
+
+async def test_pdf_flatten_does_not_block_the_loop(client, mock_engine, monkeypatch):
+    """A slow PDF extraction must not stall other in-flight requests.
+
+    pdfplumber is synchronous and can run for seconds on a real document. Run
+    inline it froze the whole gateway for that long — every other stream, before
+    the first token of any of them. Off the loop, a second request overtakes it.
+    """
+    import asyncio
+    import time
+
+    from gateway.adapters import anthropic as anthropic_adapter
+
+    order: list[str] = []
+
+    def slow_flatten(data):
+        time.sleep(0.4)  # blocking on purpose: this is what a real extraction does
+        order.append("pdf")
+        return {"type": "text", "text": "flattened"}
+
+    monkeypatch.setattr(anthropic_adapter, "pdf_to_text_block", slow_flatten)
+
+    async def with_pdf():
+        return await client.post("/v1/messages", headers=AUTH_A, json={
+            "model": "sonnet", "max_tokens": 50,
+            "messages": [{"role": "user", "content": [
+                {"type": "document", "source": {
+                    "type": "base64", "media_type": "application/pdf", "data": PDF_B64}}]}]})
+
+    async def plain():
+        await asyncio.sleep(0.05)  # start second, finish first
+        r = await client.post("/v1/messages", headers=AUTH_A, json={
+            "model": "sonnet", "max_tokens": 50,
+            "messages": [{"role": "user", "content": "hi"}]})
+        order.append("plain")
+        return r
+
+    slow, fast = await asyncio.gather(with_pdf(), plain())
+    assert slow.status_code == 200 and fast.status_code == 200
+    assert order == ["plain", "pdf"], "the plain turn waited for the PDF extraction"
