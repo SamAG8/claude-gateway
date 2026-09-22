@@ -14,13 +14,21 @@
 
 **Formatter** — the seam the Renderer crosses: a small, per-request, per-protocol Adapter (defined inside each `gateway/adapters/*` module) that renders each Canonical Event into that protocol's SSE chunks and builds its non-streaming body. Two+ Formatters make the seam real.
 
-**Engine** — `gateway/engine.py`; builds the `claude` command line and stdin, spawns the subprocess under a concurrency semaphore with a per-invocation timeout, parses the `stream-json` output, and yields Canonical Events. One code path serves streaming and non-streaming.
+**Engine** — `gateway/engine.py`; the dispatcher. It selects which transport answers a request (`select_engine`), drives it, and drains it for non-streaming callers (`collect`). It never imports an adapter, and the adapters never learn which transport ran.
+
+**CLI Engine** — `gateway/engines/cli.py`; the original and default transport. Builds the `claude` command line and stdin, spawns the subprocess in a Lane with a per-invocation timeout, parses the `stream-json` output, and yields Canonical Events. The only transport that can reach company data, because the MCP server is attached to the CLI.
+
+**HTTP Engine** — `gateway/engines/openrouter.py`; the second transport. Streams from a third-party API for models whose resolved id carries the `openrouter/` prefix. It has no tool loop and bills real money per token, where the CLI Engine rides this machine's Claude login.
+
+**Route Reason** — why a request is not being answered by the engine its model named (`mcp`, `document`, `image`, `openrouter-disabled`, `openrouter-<status>`), recorded on the Canonical Request and in the Usage Log. Null on the common path; a value is a constraint overriding the client's choice, and counting them is how we learn whether the routing is reaching the intended engine.
 
 **Isolation Mode** — how the gateway neutralizes the machine's personal context so it behaves like a clean model API. `clean` (default): override the system prompt, load no settings/hooks (`--setting-sources ""`), disable tools (`--tools ""`), and run in a throwaway cwd — keeping the machine's subscription/OAuth login. `bare`: add `--bare` (requires `ANTHROPIC_API_KEY`).
 
 **Model Map** — `models.json` (resolved by `gateway/models.py`, hot-reloaded by mtime); resolves a client's model string to a real `claude --model` value via passthrough (`claude-*`) → alias → default. Unknown models fall back to the default rather than erroring. Operational policy is family-aware: dated ids such as `claude-haiku-4-5-20251001` inherit the `haiku` fast-lane, effort, and thinking-budget settings.
 
-**Concurrency Cap** — the maximum number of simultaneous Invocations (`MAX_CONCURRENT`, default 5). Excess requests queue on the semaphore, they are not rejected.
+**Lane** — `gateway/lanes.py`; a named semaphore plus one policy: wait at most `QUEUE_WAIT_MAX` seconds for a slot, then fail fast with a 503 rather than sit in an invisible queue. Three of them — `fast` (CLI, the latency-sensitive haiku tier, `MAX_CONCURRENT_FAST`), `heavy` (CLI, everything else, `MAX_CONCURRENT`), and `http` (the HTTP Engine, `MAX_CONCURRENT_HTTP`). `http` never shares with the CLI lanes: a subprocess costs CPU and RAM on this host and an HTTP stream costs a socket, so one capacity cannot describe both.
+
+**Concurrency Cap** — the capacity of a Lane. Excess requests queue on its semaphore; they are rejected only when the queue wait runs out.
 
 **API Key** — a shared secret presented in each protocol's native auth header (`x-api-key` / `Authorization: Bearer` / `x-goog-api-key` or `?key=`), compared constant-time against the configured key set (`API_KEY` plus optional comma-separated `API_KEYS`).
 

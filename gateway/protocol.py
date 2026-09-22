@@ -30,7 +30,7 @@ class Formatter(Protocol):
 
 async def _drive(req: CanonicalRequest, fmt: Formatter) -> AsyncIterator[str]:
     started = False
-    async for ev in engine.run_claude(req):
+    async for ev in engine.run(req):
         if isinstance(ev, Start):
             # Defense in depth: one HTTP stream represents one public model
             # message even when an upstream engine performs internal tool turns.
@@ -66,7 +66,7 @@ def stream_response(req: CanonicalRequest, fmt: Formatter) -> StreamingResponse:
 async def _collect_with_disconnect(req: CanonicalRequest, request: Request) -> Result:
     """Run engine.collect as a cancellable task and race it against the client
     disconnecting. On disconnect we cancel the task, which propagates into
-    engine.run_claude's `except asyncio.CancelledError` (A3) — that kills the CLI
+    the running engine's `except asyncio.CancelledError` (A3) — that kills the CLI
     subprocess and frees its lane slot immediately instead of holding it for the
     full gateway TIMEOUT while the abandoned client has already moved on."""
     task = asyncio.ensure_future(engine.collect(req))
@@ -115,7 +115,7 @@ async def respond(req: CanonicalRequest, fmt: Formatter,
     the non-streaming path cancels the underlying CLI run if the client disconnects
     (A3). The streaming path already gets cancellation for free: Starlette cancels
     the StreamingResponse generator on disconnect, which propagates CancelledError
-    into run_claude and kills the subprocess."""
+    into the CLI engine and kills the subprocess."""
     if req.stream:
         return stream_response(req, fmt)
     return await complete_response(req, fmt, request)

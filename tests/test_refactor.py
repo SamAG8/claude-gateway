@@ -87,7 +87,7 @@ def _patch_stream(monkeypatch, events):
     async def fake_run(req):
         for e in events:
             yield e
-    monkeypatch.setattr(engine, "run_claude", fake_run)
+    monkeypatch.setattr(engine, "run", fake_run)
 
 
 async def test_drive_renders_in_order(monkeypatch):

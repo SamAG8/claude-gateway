@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from gateway import config
 from gateway.adapters import anthropic, gemini, openai
-from gateway.engine import ensure_clean_cwd
+from gateway.engines.cli import ensure_clean_cwd
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("claude-gateway")

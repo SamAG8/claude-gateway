@@ -26,7 +26,7 @@ RUN_LIVE=1 pytest tests/test_live_smoke.py   # hits the real claude CLI (costs t
 
 There is no build step and no linter configured.
 
-CI/CD runs on GitHub Actions (`.github/workflows/ci-cd.yml`): `pytest` on every PR and push to `main`, then an SSH deploy (`scripts/deploy.sh`: git reset → pip install → `systemctl restart claude-gateway` → `/health` gate) on green pushes to `main`. Server prep + secrets are in `docs/deployment.md`.
+CI/CD runs on GitHub Actions (`.github/workflows/ci-cd.yml`): `pytest` on every PR and push to `main`, then, on green pushes to `main`, a deploy on a **self-hosted runner on the constralabs box** (`runs-on: [self-hosted, constralabs-claude-gateway]`). The deploy is the Docker stack `claude-gateway` rolled by `/opt/constralabs/bin/deploy-app`, which is health-gated and self-rolling-back; CI then verifies that the build answering `https://ap.constralabs.ai/llm-gateway/health` carries the `REVISION` of the commit that was pushed, and that `mcp` and `pat_auth` are true. There is no SSH step and no `systemctl` unit any more — `scripts/deploy.sh` and `claude-gateway.service` are historical. Server prep + secrets are in `docs/deployment.md`, and on the box in `/var/www/OPERATIONS.md` and `/var/www/claude-gateway/docker/README.md`.
 
 ## Architecture: one core, three adapters
 

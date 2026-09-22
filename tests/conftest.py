@@ -1,7 +1,7 @@
 """Shared test fixtures.
 
 `fake_claude` monkeypatches asyncio.create_subprocess_exec so engine tests can
-drive run_claude with a canned stream-json transcript instead of the real CLI.
+drive the CLI engine with a canned stream-json transcript instead of the real CLI.
 """
 import asyncio
 import json
@@ -117,7 +117,7 @@ TEST_KEY = "testkey"
 
 @pytest.fixture
 def mock_engine(monkeypatch):
-    """Patch engine.run_claude with a canned canonical stream and capture the request.
+    """Patch engine.run with a canned canonical stream and capture the request.
 
     ``state['req']`` holds the CanonicalRequest the adapter produced; set
     ``state['events']`` to override the yielded canonical events.
@@ -140,7 +140,7 @@ def mock_engine(monkeypatch):
         for ev in state["events"]:
             yield ev
 
-    monkeypatch.setattr(engine, "run_claude", fake_run)
+    monkeypatch.setattr(engine, "run", fake_run)
     monkeypatch.setattr(config, "API_KEYS", {TEST_KEY})
     return state
 

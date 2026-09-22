@@ -36,6 +36,11 @@ class CanonicalRequest:
     # Per-user MCP token (from the x-mcp-token header). When set and MCP is enabled,
     # the CLI runs with the configured MCP server attached, authenticated as this user.
     mcp_token: Optional[str] = None
+    # Which engine answers this request, and why it is not the one the model asked
+    # for. Written ONLY by engine.select_engine — never by an adapter, which cannot
+    # know the resolved model's engine and must not second-guess the constraints.
+    engine: str = "cli"
+    route_reason: Optional[str] = None
 
 
 # CanonicalEvent: the typed contract the engine yields to every adapter. The four
@@ -76,6 +81,31 @@ class Result:
     input_tokens: int
     output_tokens: int
     error: Optional[Error] = None
+
+
+def media_stats(req: "CanonicalRequest") -> tuple[int, int, int]:
+    """Count native image/document blocks and approx decoded bytes across all turns.
+
+    Only blocks still present as native media reach an engine — the Anthropic
+    surface flattens PDFs to text upstream (pdf_to_text_block), so ``docs`` here
+    reflects native-vision PDFs (the expensive path), not text-extracted ones.
+
+    Called at LOG time, never before an invocation: it walks every turn, and the
+    answer is wanted for accounting, not for any decision. Doing it on the way in
+    put an O(history) loop in front of the first token for nobody's benefit.
+    """
+    imgs = docs = nbytes = 0
+    for m in (req.messages or []):
+        for b in m.blocks:
+            t = b.get("type")
+            if t == "image":
+                imgs += 1
+            elif t == "document":
+                docs += 1
+            else:
+                continue
+            nbytes += (len(b.get("data") or "") * 3) // 4  # base64 → approx raw bytes
+    return imgs, docs, nbytes
 
 
 def map_stop_reason(cli_reason: Optional[str], is_error: bool = False) -> str:

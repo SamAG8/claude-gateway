@@ -12,7 +12,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from gateway import config, engine
+from gateway import config
+from gateway.engines import cli
 from gateway.canonical import CanonicalRequest
 
 passed = 0
@@ -35,7 +36,7 @@ print("MCP connector verification")
 # --- MCP disabled (no server URL configured) ------------------------------
 config.MCP_SERVER_URL = ""
 config.MCP_SERVER_NAME = "constraap"
-argv = engine.build_argv(req(token="cap_x"))
+argv = cli.build_argv(req(token="cap_x"))
 check("MCP disabled → no --mcp-config even with a token", "--mcp-config" not in argv)
 check("MCP disabled → built-ins still off", argv[argv.index("--tools") + 1] == "")
 
@@ -43,10 +44,10 @@ check("MCP disabled → built-ins still off", argv[argv.index("--tools") + 1] ==
 config.MCP_SERVER_URL = "https://ap.constralabs.ai/mcp"
 config.MCP_SERVER_NAME = "constraap"
 
-argv = engine.build_argv(req(token=None))
+argv = cli.build_argv(req(token=None))
 check("MCP enabled but no token → no --mcp-config", "--mcp-config" not in argv)
 
-argv = engine.build_argv(req(token="cap_secret"))
+argv = cli.build_argv(req(token="cap_secret"))
 check("token present → --mcp-config added", "--mcp-config" in argv)
 check("--strict-mcp-config added", "--strict-mcp-config" in argv)
 check("allowedTools scoped to the one server", "mcp__constraap" in argv)
@@ -65,7 +66,7 @@ check("token embedded as Bearer auth", srv["headers"]["Authorization"] == "Beare
 
 # --- server name honored --------------------------------------------------
 config.MCP_SERVER_NAME = "company"
-argv = engine.build_argv(req(token="cap_x"))
+argv = cli.build_argv(req(token="cap_x"))
 check("allowedTools tracks MCP_SERVER_NAME", "mcp__company" in argv)
 
 print(f"\nAll {passed} checks passed.")

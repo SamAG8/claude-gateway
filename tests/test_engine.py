@@ -4,7 +4,8 @@ import sys
 
 import pytest
 
-from gateway import config, engine
+from gateway import config, engine, lanes, usage_log
+from gateway.engines import cli
 from gateway.canonical import (
     CanonicalMessage,
     CanonicalRequest,
@@ -27,13 +28,13 @@ def _req(**kw):
 
 
 async def _drain(req):
-    return [ev async for ev in engine.run_claude(req)]
+    return [ev async for ev in cli.run_claude(req)]
 
 
 # ---- argv ---------------------------------------------------------------
 
 def test_build_argv_disables_tools_and_settings():
-    argv = engine.build_argv(_req())
+    argv = cli.build_argv(_req())
     # --tools must be the empty string (the old `--tools none` bug), and present.
     ti = argv.index("--tools")
     assert argv[ti + 1] == ""
@@ -46,13 +47,13 @@ def test_build_argv_disables_tools_and_settings():
 
 
 def test_build_argv_default_system_prompt():
-    argv = engine.build_argv(_req(system=None))
+    argv = cli.build_argv(_req(system=None))
     sp = argv.index("--system-prompt")
     assert argv[sp + 1] == config.DEFAULT_SYSTEM_PROMPT
 
 
 def test_build_argv_custom_system_prompt():
-    argv = engine.build_argv(_req(system="Be terse."))
+    argv = cli.build_argv(_req(system="Be terse."))
     sp = argv.index("--system-prompt")
     assert argv[sp + 1] == "Be terse."
 
@@ -60,25 +61,25 @@ def test_build_argv_custom_system_prompt():
 def test_build_argv_haiku_uses_low_effort(monkeypatch):
     # Fast tier stays at low effort even when the global EFFORT is high (issue #11).
     monkeypatch.setattr(config, "EFFORT", "high")
-    argv = engine.build_argv(_req(model="haiku"))
+    argv = cli.build_argv(_req(model="haiku"))
     assert argv[argv.index("--effort") + 1] == "low"
 
 
 def test_build_argv_non_haiku_uses_global_effort(monkeypatch):
     monkeypatch.setattr(config, "EFFORT", "high")
-    argv = engine.build_argv(_req(model="opus"))
+    argv = cli.build_argv(_req(model="opus"))
     assert argv[argv.index("--effort") + 1] == "high"
 
 
 def test_build_argv_per_request_effort_overrides_model_default(monkeypatch):
     monkeypatch.setattr(config, "EFFORT", "high")
-    argv = engine.build_argv(_req(model="haiku", effort_override="medium"))
+    argv = cli.build_argv(_req(model="haiku", effort_override="medium"))
     assert argv[argv.index("--effort") + 1] == "medium"
 
 
 def test_build_argv_no_effort_when_global_unset(monkeypatch):
     monkeypatch.setattr(config, "EFFORT", "")
-    assert "--effort" not in engine.build_argv(_req(model="opus"))
+    assert "--effort" not in cli.build_argv(_req(model="opus"))
 
 
 # ---- stdin --------------------------------------------------------------
@@ -88,7 +89,7 @@ def test_build_stdin_single_turn_preserves_image_blocks():
         {"type": "text", "text": "what is this?"},
         {"type": "image", "media_type": "image/png", "data": "AAAA"},
     ])])
-    msg = json.loads(engine.build_stdin(req))
+    msg = json.loads(cli.build_stdin(req))
     content = msg["message"]["content"]
     assert content[0] == {"type": "text", "text": "what is this?"}
     assert content[1]["type"] == "image"
@@ -100,7 +101,7 @@ def test_build_stdin_single_turn_preserves_document_blocks():
         {"type": "text", "text": "extract this"},
         {"type": "document", "media_type": "application/pdf", "data": "BBBB"},
     ])])
-    msg = json.loads(engine.build_stdin(req))
+    msg = json.loads(cli.build_stdin(req))
     content = msg["message"]["content"]
     assert content[0] == {"type": "text", "text": "extract this"}
     assert content[1]["type"] == "document"
@@ -116,7 +117,7 @@ def test_build_stdin_multiturn_flattens_history_and_keeps_final_image():
             {"type": "image", "media_type": "image/png", "data": "ZZZ"},
         ]),
     ])
-    msg = json.loads(engine.build_stdin(req))
+    msg = json.loads(cli.build_stdin(req))
     content = msg["message"]["content"]
     text = content[0]["text"]
     assert "User: first" in text and "Assistant: ok" in text
@@ -131,7 +132,7 @@ def test_build_stdin_history_image_becomes_placeholder():
         CanonicalMessage("assistant", [{"type": "text", "text": "ok"}]),
         CanonicalMessage("user", [{"type": "text", "text": "now"}]),
     ])
-    msg = json.loads(engine.build_stdin(req))
+    msg = json.loads(cli.build_stdin(req))
     assert "[image omitted]" in msg["message"]["content"][0]["text"]
 
 
@@ -141,7 +142,7 @@ def test_build_stdin_history_document_becomes_placeholder():
         CanonicalMessage("assistant", [{"type": "text", "text": "ok"}]),
         CanonicalMessage("user", [{"type": "text", "text": "now"}]),
     ])
-    msg = json.loads(engine.build_stdin(req))
+    msg = json.loads(cli.build_stdin(req))
     assert "[document omitted]" in msg["message"]["content"][0]["text"]
 
 
@@ -269,13 +270,13 @@ async def test_generic_cli_error_still_logs_reason_and_502(fake_claude, caplog):
     ("", False),
 ])
 def test_is_overloaded_classification(msg, expected):
-    assert engine.is_overloaded(msg) is expected
+    assert cli.is_overloaded(msg) is expected
 
 
 def test_short_reason_collapses_and_caps():
-    assert engine._short_reason("a\n  b\tc") == "a b c"
-    assert len(engine._short_reason("x" * 500)) == engine._REASON_MAX
-    assert engine._short_reason(None) is None
+    assert usage_log._short_reason("a\n  b\tc") == "a b c"
+    assert len(usage_log._short_reason("x" * 500)) == usage_log._REASON_MAX
+    assert usage_log._short_reason(None) is None
 
 
 async def test_run_claude_stdin_is_written(fake_claude):
@@ -311,7 +312,7 @@ async def test_run_claude_survives_stream_lines_over_64kib(tmp_path, monkeypatch
         "sys.stdin.buffer.read()\n"  # drain the gateway's stdin write
         f"sys.stdout.buffer.write(open({str(transcript)!r}, 'rb').read())\n"
     )
-    monkeypatch.setattr(engine, "build_argv", lambda req: [sys.executable, "-c", feeder])
+    monkeypatch.setattr(cli, "build_argv", lambda req: [sys.executable, "-c", feeder])
     events = await _drain(_req())
     assert not any(isinstance(e, Error) for e in events)
     assert events[0] == Start(model="claude-sonnet-4-6", input_tokens=136)
@@ -328,20 +329,20 @@ async def test_spawn_limit_scales_with_stdin(fake_claude, monkeypatch):
     req = _req(messages=[CanonicalMessage("user", [
         {"type": "image", "media_type": "image/jpeg", "data": "A" * 100_000}])])
     await _drain(req)
-    assert fake_claude["kwargs"]["limit"] == 2 * len(engine.build_stdin(req))
+    assert fake_claude["kwargs"]["limit"] == 2 * len(cli.build_stdin(req))
 
 
 # ---- A2: two-lane semaphore + bounded queue wait ------------------------
 
 def _reset_semaphores():
-    engine._semaphores.clear()
+    lanes._semaphores.clear()
 
 
 async def test_lane_selection_fast_vs_heavy(fake_claude, monkeypatch):
     """haiku picks the fast lane, sonnet the heavy lane (logged + usage-recorded)."""
     _reset_semaphores()
     recorded = []
-    monkeypatch.setattr(engine.usage_log, "record",
+    monkeypatch.setattr(usage_log, "record",
                         lambda **kw: recorded.append(kw))
     await _drain(_req(model="haiku"))
     await _drain(_req(model="sonnet"))
@@ -359,7 +360,7 @@ async def test_exact_haiku_id_uses_fast_lane_and_disables_thinking(fake_claude, 
     """Nimbus sends dated Claude ids, not the short ``haiku`` alias."""
     _reset_semaphores()
     recorded = []
-    monkeypatch.setattr(engine.usage_log, "record", lambda **kw: recorded.append(kw))
+    monkeypatch.setattr(usage_log, "record", lambda **kw: recorded.append(kw))
     await _drain(_req(model="claude-haiku-4-5-20251001"))
     assert recorded[0]["lane"] == "fast"
     assert fake_claude["kwargs"]["env"]["MAX_THINKING_TOKENS"] == "0"
@@ -372,7 +373,7 @@ async def test_saturated_returns_503_and_releases(monkeypatch):
     monkeypatch.setattr(config, "QUEUE_WAIT_MAX", 0.05)
     # Force the heavy lane to capacity 1 and pre-acquire it.
     monkeypatch.setattr(config, "MAX_CONCURRENT", 1)
-    sem = engine._get_semaphore("heavy")
+    sem = lanes.get_semaphore("heavy")
     await sem.acquire()  # occupy the only slot
     events = await _drain(_req(model="sonnet"))
     assert isinstance(events[-1], Error) and events[-1].status == 503
@@ -386,7 +387,7 @@ async def test_slot_released_on_success(fake_claude):
     """A normal run releases its slot on completion (semaphore returns to full)."""
     _reset_semaphores()
     await _drain(_req(model="haiku"))
-    sem = engine._get_semaphore("fast")
+    sem = lanes.get_semaphore("fast")
     assert sem._value == config.MAX_CONCURRENT_FAST
 
 
@@ -461,7 +462,7 @@ async def test_cancel_kills_subprocess_and_frees_slot(monkeypatch):
     monkeypatch.setattr(_asyncio, "create_subprocess_exec", fake_exec)
 
     async def run():
-        async for _ in engine.run_claude(_req(model="haiku")):
+        async for _ in cli.run_claude(_req(model="haiku")):
             pass
 
     task = _asyncio.ensure_future(run())
@@ -470,5 +471,5 @@ async def test_cancel_kills_subprocess_and_frees_slot(monkeypatch):
     with pytest.raises(_asyncio.CancelledError):
         await task
     assert proc.killed is True
-    sem = engine._get_semaphore("fast")
+    sem = lanes.get_semaphore("fast")
     assert sem._value == config.MAX_CONCURRENT_FAST  # slot freed
