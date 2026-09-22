@@ -21,14 +21,30 @@
     "claude-3-opus-latest": "opus",
     "sonnet": "sonnet",
     "opus": "opus",
-    "haiku": "haiku"
+    "haiku": "haiku",
+    "glm-flash": "openrouter/z-ai/glm-5.3-flash",
+    "glm": "openrouter/z-ai/glm-5.3"
   },
   "effort": {
-    "haiku": "low"
+    "haiku": "low",
+    "openrouter/z-ai/glm-5.3-flash": "low"
   },
   "max_thinking_tokens": {
-    "haiku": 0
+    "haiku": 0,
+    "openrouter/z-ai/glm-5.3-flash": 0
   },
-  "fast_models": ["haiku"],
-  "passthrough_prefixes": ["claude-"]
+  "fast_models": [
+    "haiku"
+  ],
+  "passthrough_prefixes": [
+    "claude-",
+    "openrouter/"
+  ],
+  "claude_fallback": {
+    "openrouter/z-ai/glm-5.3-flash": "haiku",
+    "openrouter/z-ai/glm-5.3": "sonnet"
+  },
+  "text_only": [
+    "openrouter/z-ai/glm-5.3"
+  ]
 }

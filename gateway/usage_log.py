@@ -43,6 +43,9 @@ def outcome(verb: str, result: str, req, elapsed: float,
             first_text_ms: int | None = None, total_ms: int | None = None,
             prompt_bytes: int = 0, history_messages: int = 0,
             mcp: bool = False,
+            provider: str | None = None,
+            cost_usd: float | None = None,
+            reasoning_tokens: int | None = None,
             reason: str | None = None,
             level: int = logging.INFO) -> None:
     """One line per invocation so errors and durations are visible in journald,
@@ -78,7 +81,8 @@ def outcome(verb: str, result: str, req, elapsed: float,
            stdin_ms=stdin_ms, first_event_ms=first_event_ms,
            first_text_ms=first_text_ms, total_ms=total_ms,
            prompt_bytes=prompt_bytes, history_messages=history_messages,
-           mcp=mcp,
+           mcp=mcp, provider=provider, cost_usd=cost_usd,
+           reasoning_tokens=reasoning_tokens,
            reason=_short_reason(reason))
 
 
@@ -97,7 +101,8 @@ def record(*, outcome: str, req, elapsed: float,
            lane=None, queue_wait_ms=None, spawn_ms=None, stdin_ms=None,
            first_event_ms=None, first_text_ms=None, total_ms=None,
            prompt_bytes: int = 0, history_messages: int = 0,
-           mcp: bool = False, reason=None) -> None:
+           mcp: bool = False, provider=None, cost_usd=None,
+           reasoning_tokens=None, reason=None) -> None:
     if not config.USAGE_LOG:
         return
     try:
@@ -136,6 +141,15 @@ def record(*, outcome: str, req, elapsed: float,
         # Only present on non-success outcomes, so success records stay unchanged.
         if reason:
             rec["reason"] = reason
+        # Only the HTTP engine has these, and only it bills real money. est_cost_usd
+        # below stays a REFERENCE figure for every record; cost_usd is what was
+        # actually charged, which is the number the subscription-vs-cash split needs.
+        if provider:
+            rec["provider"] = provider
+        if cost_usd is not None:
+            rec["cost_usd"] = cost_usd
+        if reasoning_tokens is not None:
+            rec["reasoning_tokens"] = reasoning_tokens
         rec["est_cost_usd"] = pricing.estimate_cost_usd(
             req.model, rec["input_tokens"], rec["output_tokens"],
             rec["cache_read"], rec["cache_creation"],

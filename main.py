@@ -33,7 +33,14 @@ async def lifespan(app: FastAPI):
     )
     if not config.API_KEYS:
         log.warning("No API_KEY/API_KEYS configured — all authenticated requests will be rejected.")
-    yield
+    # Open the HTTP engine's connection now so the first real turn does not pay for
+    # the TLS handshake. Never fails startup; it is a warm-up, not a health check.
+    from gateway.engines import openrouter
+    await openrouter.warm()
+    try:
+        yield
+    finally:
+        await openrouter.aclose()
 
 
 app = FastAPI(title="Claude Gateway", lifespan=lifespan)
@@ -109,6 +116,10 @@ async def health():
         "revision": deployed_revision(),
         "mcp": config.mcp_enabled(),
         "pat_auth": config.pat_auth_enabled(),
+        # Same reason as `mcp`: whether the second engine can be reached at all is
+        # a fact about this deployment that is otherwise invisible, and a tier
+        # silently answering from Claude looks exactly like one that is working.
+        "openrouter": config.openrouter_enabled(),
     }
 
 

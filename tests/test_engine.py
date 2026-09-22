@@ -473,3 +473,83 @@ async def test_cancel_kills_subprocess_and_frees_slot(monkeypatch):
     assert proc.killed is True
     sem = lanes.get_semaphore("fast")
     assert sem._value == config.MAX_CONCURRENT_FAST  # slot freed
+
+
+# ---- engine selection ----------------------------------------------------
+#
+# The whole routing rule, held to what it must never do. Every case here is a
+# constraint the client could not have known about; the client picks the model.
+
+FLASH = "openrouter/z-ai/glm-5.3-flash"
+TEXT_ONLY = "openrouter/z-ai/glm-5.3"
+
+
+def _or_req(**kw):
+    kw.setdefault("model", FLASH)
+    kw.setdefault("requested_model", "glm-flash")
+    return _req(**kw)
+
+
+@pytest.fixture
+def openrouter_on(monkeypatch):
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "or-test-key")
+
+
+def test_a_claude_model_is_never_rerouted(openrouter_on):
+    req = _req(model="sonnet")
+    engine.select_engine(req)
+    assert (req.engine, req.route_reason, req.model) == ("cli", None, "sonnet")
+
+
+def test_an_openrouter_model_reaches_the_http_engine(openrouter_on):
+    req = _or_req()
+    engine.select_engine(req)
+    assert (req.engine, req.route_reason) == ("openrouter", None)
+
+
+def test_company_data_forces_claude(openrouter_on, monkeypatch):
+    """The hard one. The tools live on the CLI, so a turn holding an identity to
+    look things up with cannot be answered by an engine that has no tool loop."""
+    monkeypatch.setattr(config, "MCP_SERVER_URL", "https://mcp.test")
+    req = _or_req(mcp_token="cap_x")
+    engine.select_engine(req)
+    assert (req.engine, req.route_reason, req.model) == ("cli", "mcp", "haiku")
+
+
+def test_a_native_document_forces_claude(openrouter_on):
+    req = _or_req(messages=[CanonicalMessage("user", [
+        {"type": "document", "media_type": "application/pdf", "data": "JVBERi0="}])])
+    engine.select_engine(req)
+    assert (req.engine, req.route_reason) == ("cli", "document")
+
+
+def test_an_image_forces_claude_only_on_a_text_only_model(openrouter_on):
+    img = [{"type": "image", "media_type": "image/png", "data": "iVBOR"}]
+
+    seeing = _or_req(messages=[CanonicalMessage("user", img)])
+    engine.select_engine(seeing)
+    assert seeing.engine == "openrouter"
+
+    blind = _or_req(model=TEXT_ONLY, messages=[CanonicalMessage("user", img)])
+    engine.select_engine(blind)
+    assert (blind.engine, blind.route_reason, blind.model) == ("cli", "image", "sonnet")
+
+
+def test_selection_looks_only_at_the_final_turn(openrouter_on):
+    """A document three messages back is a placeholder by the time either engine
+    sends it, so scanning history for one would cost an O(history) walk in front
+    of the first token to answer a question with no consequences."""
+    req = _or_req(messages=[
+        CanonicalMessage("user", [{"type": "document", "media_type": "application/pdf",
+                                   "data": "JVBERi0="}]),
+        CanonicalMessage("user", [{"type": "text", "text": "and now?"}]),
+    ])
+    engine.select_engine(req)
+    assert req.engine == "openrouter"
+
+
+def test_an_unset_key_switches_the_whole_tier_back_and_says_so(monkeypatch):
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "")
+    req = _or_req()
+    engine.select_engine(req)
+    assert (req.engine, req.route_reason, req.model) == ("cli", "openrouter-disabled", "haiku")

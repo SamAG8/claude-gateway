@@ -101,13 +101,33 @@ def select_engine(req: CanonicalRequest) -> None:
 
 
 async def run(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]:
-    """Select an engine and yield its CanonicalEvents."""
+    """Select an engine and yield its CanonicalEvents.
+
+    One fallback, and it is narrow on purpose: if the HTTP engine fails BEFORE its
+    first chunk, the turn has not started and Claude can still take it. After the
+    first chunk there is a half-written answer on the wire and no handover is
+    possible, so every later failure is an Error like any other.
+
+    The fallback reloads the subscription during an upstream outage, which is the
+    pressure this engine exists to relieve. That is a real cost, and the answer is
+    to make it visible (route_reason, counted in the report) rather than to make a
+    waiting person retry by hand. Set OPENROUTER_FALLBACK=0 to trade back.
+    """
     select_engine(req)
     if req.engine == "openrouter":
         from .engines import openrouter  # imported lazily: httpx is only needed here
-        async for ev in openrouter.run_openrouter(req):
-            yield ev
-        return
+        try:
+            async for ev in openrouter.run_openrouter(req):
+                yield ev
+            return
+        except openrouter.PreStreamFailure as failure:
+            if not config.OPENROUTER_FALLBACK:
+                yield Error(failure.status, failure.message)
+                return
+            logger.warning("openrouter fell back to claude: %s", failure.message)
+            req.engine = "cli"
+            req.route_reason = f"openrouter-{failure.label}"
+            req.model = models.claude_fallback(req.model)
     async for ev in cli.run_claude(req):
         yield ev
 

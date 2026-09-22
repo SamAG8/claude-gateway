@@ -488,3 +488,37 @@ async def test_pdf_flatten_does_not_block_the_loop(client, mock_engine, monkeypa
     slow, fast = await asyncio.gather(with_pdf(), plain())
     assert slow.status_code == 200 and fast.status_code == 200
     assert order == ["plain", "pdf"], "the plain turn waited for the PDF extraction"
+
+
+# ====================== The wire shape is engine-independent ======================
+
+async def test_a_glm_request_streams_the_same_frames_as_a_claude_one(client, mock_engine):
+    """The extension parses frames, not prose, and throws on an unexpected order.
+    Whichever engine answered, the Anthropic surface must look identical."""
+    r = await client.post("/v1/messages", headers=AUTH_A, json={
+        "model": "glm-flash", "max_tokens": 50, "stream": True,
+        "messages": [{"role": "user", "content": "hi"}]})
+    types = [json.loads(e)["type"] for e in sse_events(r.text)]
+    assert types == ["message_start", "content_block_start", "ping",
+                     "content_block_delta", "content_block_delta",
+                     "content_block_stop", "message_delta", "message_stop"]
+
+
+async def test_message_delta_reports_input_tokens_too(client, mock_engine):
+    """The HTTP engine cannot know the prompt size until its final chunk, so
+    message_start carries a zero. Without this the extension's own usage meter
+    bills every such turn as zero input."""
+    r = await client.post("/v1/messages", headers=AUTH_A, json={
+        "model": "glm-flash", "max_tokens": 50, "stream": True,
+        "messages": [{"role": "user", "content": "hi"}]})
+    delta = next(json.loads(e) for e in sse_events(r.text)
+                 if json.loads(e)["type"] == "message_delta")
+    assert delta["usage"] == {"input_tokens": 11, "output_tokens": 3}
+
+
+async def test_health_says_whether_the_second_engine_is_reachable(client, monkeypatch):
+    from gateway import config
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "or-test-key")
+    assert (await client.get("/health")).json()["openrouter"] is True
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "")
+    assert (await client.get("/health")).json()["openrouter"] is False

@@ -181,9 +181,15 @@ class _Formatter:
 
     def on_stop(self, ev: Stop) -> Iterable[str]:
         yield sse({"type": "content_block_stop", "index": 0}, event="content_block_stop")
+        # Cumulative usage, as the real Anthropic wire format sends it. Only
+        # output_tokens was here, which was harmless while every engine reported
+        # input on message_start — the HTTP engine cannot, because the upstream
+        # does not know the prompt size until its final chunk. Without this, those
+        # turns bill as zero input in the extension's own usage meter.
         yield sse({"type": "message_delta",
                    "delta": {"stop_reason": _native_stop(ev.stop_reason), "stop_sequence": None},
-                   "usage": {"output_tokens": ev.output_tokens}}, event="message_delta")
+                   "usage": {"input_tokens": ev.input_tokens,
+                             "output_tokens": ev.output_tokens}}, event="message_delta")
         yield sse({"type": "message_stop"}, event="message_stop")
 
     def on_error(self, ev: Error) -> Iterable[str]:

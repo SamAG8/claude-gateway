@@ -164,3 +164,61 @@ def sse_events(text: str) -> list[str]:
             if line.startswith("data:"):
                 out.append(line[len("data:"):].strip())
     return out
+
+
+# --- HTTP engine fixtures (mock the socket, not the engine) ---------------
+
+def _chunk(obj: dict) -> str:
+    return "data: " + json.dumps(obj) + "\n"
+
+
+# A realistic OpenRouter stream: keepalive, a role-only chunk, a reasoning delta
+# the engine must drop, two content deltas, then the final chunk carrying
+# finish_reason and usage (including the real charge), then [DONE].
+OR_SUCCESS_LINES = [
+    ": OPENROUTER PROCESSING\n",
+    _chunk({"id": "gen_1", "provider": "Z.AI", "model": "z-ai/glm-5.3-flash",
+            "choices": [{"delta": {"role": "assistant"}}]}),
+    _chunk({"id": "gen_1", "choices": [{"delta": {"reasoning": "hmm let me think"}}]}),
+    _chunk({"id": "gen_1", "choices": [{"delta": {"content": "PI"}}]}),
+    _chunk({"id": "gen_1", "choices": [{"delta": {"content": "NG"}}]}),
+    _chunk({"id": "gen_1", "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 42, "completion_tokens": 5, "cost": 0.000123,
+                      "prompt_tokens_details": {"cached_tokens": 7},
+                      "completion_tokens_details": {"reasoning_tokens": 3}}}),
+    "data: [DONE]\n",
+]
+
+
+@pytest.fixture
+def fake_openrouter(monkeypatch):
+    """Patch the HTTP engine's shared client with an httpx MockTransport.
+
+    Set ``holder['lines']`` for the SSE body and ``holder['status']`` for a
+    pre-stream HTTP failure. ``holder['body']`` and ``holder['headers']`` capture
+    what the engine actually sent.
+    """
+    import httpx
+
+    from gateway.engines import openrouter
+
+    holder = {"lines": OR_SUCCESS_LINES, "status": 200, "body": None,
+              "headers": None, "url": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        holder["url"] = str(request.url)
+        holder["headers"] = dict(request.headers)
+        holder["body"] = json.loads(request.content or b"{}")
+        if holder["status"] != 200:
+            return httpx.Response(holder["status"], text="upstream said no")
+        return httpx.Response(200, text="".join(holder["lines"]),
+                              headers={"content-type": "text/event-stream"})
+
+    client = httpx.AsyncClient(base_url="https://openrouter.test/api/v1",
+                              transport=httpx.MockTransport(handler))
+
+    async def fake_get_client():
+        return client
+
+    monkeypatch.setattr(openrouter, "get_client", fake_get_client)
+    return holder
