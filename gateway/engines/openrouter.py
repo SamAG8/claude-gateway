@@ -151,17 +151,27 @@ def _reasoning(req: CanonicalRequest) -> dict | None:
     """Translate our thinking/effort policy into the upstream's ``reasoning`` field.
 
     Load-bearing, not a nicety: these are reasoning models, and their reasoning
-    tokens come out of ``max_tokens``. A titling call asking for 40 tokens would
-    spend all of them thinking and return an empty answer.
+    tokens come out of ``max_tokens``. A short call — naming a conversation asks
+    for a few dozen — can otherwise spend the whole budget thinking and return
+    nothing at all.
+
+    ``max_thinking_tokens: 0`` means "as little as this model will do", NOT
+    "none". Asking for none is refused outright by GLM's endpoint — *Reasoning
+    is mandatory for this endpoint and cannot be disabled*, an upstream 400 on
+    every turn — so the least we can ask for is low effort with the thinking
+    left out of the response. Its tokens are still charged and still counted
+    against max_tokens; ``exclude`` only keeps it off the wire, which is what
+    the Renderer needs, since chain-of-thought must never reach a Formatter as
+    the answer.
     """
     mtt = models.resolve_max_thinking_tokens(req.model)
     if mtt is not None:
-        return {"enabled": False} if mtt == 0 else {"max_tokens": mtt}
+        return {"effort": "low", "exclude": True} if mtt == 0 else {"max_tokens": mtt, "exclude": True}
     effort = req.effort_override or models.resolve_effort(req.model)
     if not effort:
         return None
     # The upstream knows three levels; ours go to five.
-    return {"effort": "high" if effort in ("xhigh", "max") else effort}
+    return {"effort": "high" if effort in ("xhigh", "max") else effort, "exclude": True}
 
 
 def build_body(req: CanonicalRequest) -> dict:
@@ -292,8 +302,13 @@ async def run_openrouter(req: CanonicalRequest) -> AsyncIterator[CanonicalEvent]
                 if resp.status_code != 200:
                     raw = (await resp.aread()).decode("utf-8", errors="replace")
                     failure = _status_failure(resp.status_code, raw.strip()[:300])
+                    # 4xx that is not rate limiting is OUR request being wrong,
+                    # and it will be wrong on every turn. The fallback keeps
+                    # people working, so this line is the only thing that will
+                    # tell anyone the cheap tier has silently stopped existing.
                     _log("openrouter-error", _loop.time() - start, reason=failure.message,
-                         level=logging.ERROR if failure.label in ("auth", "no-credit")
+                         level=logging.ERROR
+                         if failure.label in ("auth", "no-credit") or resp.status_code in (400, 404, 422)
                          else logging.WARNING)
                     raise failure
 

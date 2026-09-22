@@ -89,16 +89,24 @@ def test_sampling_knobs_are_honoured_here_even_though_the_cli_ignores_them():
     assert body["stop"] == ["END"]
 
 
-def test_reasoning_is_off_when_the_model_map_disables_thinking():
-    """The flash tier is mapped to max_thinking_tokens 0, and titling asks for 40
-    tokens — with reasoning on, they would all be spent thinking."""
-    assert openrouter.build_body(_req())["reasoning"] == {"enabled": False}
+def test_the_least_thinking_the_model_allows_is_asked_for_not_none():
+    """Verified against the live endpoint, 2026-09-22: asking GLM for no
+    reasoning at all is a 400 on every turn — *Reasoning is mandatory for this
+    endpoint and cannot be disabled*. Low effort is the floor; exclude keeps the
+    thinking off the wire so it can never be rendered as the answer."""
+    assert openrouter.build_body(_req())["reasoning"] == {"effort": "low", "exclude": True}
+
+
+def test_reasoning_is_never_asked_to_be_returned():
+    from gateway import models
+    body = openrouter.build_body(_req(effort_override="high"))
+    assert body["reasoning"]["exclude"] is True
 
 
 def test_an_effort_suffix_becomes_the_upstream_effort(monkeypatch):
     from gateway import models
     monkeypatch.setattr(models, "resolve_max_thinking_tokens", lambda m: None)
-    assert openrouter.build_body(_req(effort_override="max"))["reasoning"] == {"effort": "high"}
+    assert openrouter.build_body(_req(effort_override="max"))["reasoning"] == {"effort": "high", "exclude": True}
 
 
 def test_providers_are_sorted_by_latency_because_that_is_the_point():
