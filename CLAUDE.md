@@ -22,6 +22,9 @@ pytest                                    # mocked engine — no CLI calls, fast
 pytest tests/test_adapters.py            # one file
 pytest tests/test_engine.py::test_run_claude_yields_canonical_events  # one test
 RUN_LIVE=1 pytest tests/test_live_smoke.py   # hits the real claude CLI (costs tokens)
+
+# Is the cheap tier actually answering? (light vs heavy vs company-data)
+GATEWAY_KEY=<pat-or-api-key> python3 scripts/check_routing.py
 ```
 
 There is no build step and no linter configured.
