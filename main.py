@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from gateway import config
-from gateway.adapters import anthropic, gemini, openai
+from gateway.adapters import anthropic, gemini, openai, transcribe
 from gateway.engines.cli import ensure_clean_cwd
 
 logging.basicConfig(level=logging.INFO)
@@ -55,6 +55,7 @@ app.add_middleware(
 app.include_router(anthropic.router)
 app.include_router(openai.router)
 app.include_router(gemini.router)
+app.include_router(transcribe.router)
 
 
 @lru_cache(maxsize=1)
@@ -120,6 +121,8 @@ async def health():
         # a fact about this deployment that is otherwise invisible, and a tier
         # silently answering from Claude looks exactly like one that is working.
         "openrouter": config.openrouter_enabled(),
+        # Meeting Minutes needs the OpenRouter key AND ffmpeg in the image.
+        "transcribe": config.transcribe_enabled(),
     }
 
 
