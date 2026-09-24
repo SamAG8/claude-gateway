@@ -108,6 +108,28 @@ OPENROUTER_REFERER = os.getenv("OPENROUTER_REFERER", "").strip()
 def openrouter_enabled() -> bool:
     return bool(OPENROUTER_API_KEY)
 
+# --- Audio transcription (Nimbus Meeting Minutes) -----------------------------
+# One narrow audio path: POST /v1/audio/transcriptions takes a meeting recording,
+# ffmpeg reduces it to small mono speech audio, and an audio-capable OpenRouter
+# model writes the transcript. Nothing else in the gateway handles audio.
+TRANSCRIBE_MODEL = os.getenv("TRANSCRIBE_MODEL", "google/gemini-2.5-flash").strip()
+TRANSCRIBE_MAX_UPLOAD = int(os.getenv("TRANSCRIBE_MAX_UPLOAD", str(600 * 1024 * 1024)))
+TRANSCRIBE_MAX_SECONDS = int(os.getenv("TRANSCRIBE_MAX_SECONDS", str(90 * 60)))
+# Recordings longer than this are cut into segments of this length and
+# transcribed one segment at a time, so no single answer runs into max_tokens.
+TRANSCRIBE_SEGMENT_SECONDS = int(os.getenv("TRANSCRIBE_SEGMENT_SECONDS", str(30 * 60)))
+TRANSCRIBE_TIMEOUT = float(os.getenv("TRANSCRIBE_TIMEOUT", "300"))
+TRANSCRIBE_MAX_TOKENS = int(os.getenv("TRANSCRIBE_MAX_TOKENS", "32000"))
+# Comma-separated ConstraAP org ids allowed to transcribe. Empty = any valid PAT.
+TRANSCRIBE_ORG_IDS = {v.strip() for v in os.getenv("TRANSCRIBE_ORG_IDS", "").split(",") if v.strip()}
+FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg").strip()
+FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe").strip()
+
+
+def transcribe_enabled() -> bool:
+    import shutil
+    return openrouter_enabled() and bool(shutil.which(FFMPEG_BIN)) and bool(shutil.which(FFPROBE_BIN))
+
 # --- MCP connector (per-user company data) ---------------------------------
 # When MCP_SERVER_URL is set, a request carrying a per-user token (the
 # `x-mcp-token` header) runs the CLI with that MCP server attached, scoped to its

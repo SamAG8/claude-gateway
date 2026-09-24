@@ -73,7 +73,7 @@ Adapter and engine tests **mock, never call the real CLI**:
 
 - Config is module-level constants in `gateway/config.py`, read once from env at import (see `.env.example`). Auth accepts `API_KEY` plus optional comma-separated `API_KEYS`.
 - `CONTEXT.md` holds the project glossary (Adapter, Canonical Request/Event, Engine, Isolation Mode, Model Map) — keep it in sync when these concepts change.
-- Scope is deliberately bounded: no native tool_use/function-calling *passthrough* (per-user MCP servers via `--mcp-config` ARE supported — see MCP connector above), no embeddings, audio, image-gen, batch, or multi-tenant key management (see README "Known limitations" and the issue's non-goals).
+- Scope is deliberately bounded: no native tool_use/function-calling *passthrough* (per-user MCP servers via `--mcp-config` ARE supported — see MCP connector above), no embeddings, image-gen, batch, or multi-tenant key management (see README "Known limitations" and the issue's non-goals). Audio has exactly one narrow path: `POST /v1/audio/transcriptions` (`gateway/adapters/transcribe.py` + `gateway/transcribe.py`) for Nimbus Meeting Minutes — raw recording body, ffmpeg to 16 kHz mono MP3, one OpenRouter audio model (`TRANSCRIBE_MODEL`, default `google/gemini-2.5-flash`), optional `TRANSCRIBE_ORG_IDS` gate on the PAT's org. It needs `ffmpeg`/`ffprobe` in the image; `/health` reports `transcribe`.
 
 ## Agent skills
 

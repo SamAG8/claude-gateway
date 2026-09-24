@@ -17,8 +17,10 @@ import urllib.request
 
 from . import config
 
-# token -> (expires_at_monotonic, active). Small user base; pruned opportunistically.
-_cache: dict[str, tuple[float, bool]] = {}
+# token -> (expires_at_monotonic, record-or-None). Small user base; pruned
+# opportunistically. The whole record is kept, not just "active", because the
+# transcription endpoint gates on the org the token belongs to.
+_cache: dict[str, tuple[float, dict | None]] = {}
 _MAX_CACHE = 4096
 
 
@@ -29,7 +31,7 @@ def _prune(now: float) -> None:
         _cache.pop(k, None)
 
 
-def _introspect_sync(token: str) -> bool:
+def _introspect_sync(token: str) -> dict | None:
     body = json.dumps({"token": token}).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if config.INTROSPECT_SECRET:
@@ -40,23 +42,31 @@ def _introspect_sync(token: str) -> bool:
     try:
         with urllib.request.urlopen(req, timeout=config.INTROSPECT_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            return bool(data.get("active"))
+            return data if isinstance(data, dict) and data.get("active") else None
     except Exception:
-        return False  # fail closed: unreachable / bad response => not authorized
+        return None  # fail closed: unreachable / bad response => not authorized
 
 
-async def token_is_active(token: str | None) -> bool:
-    """True if `token` is a live ConstraAP PAT. Cached; fail-closed."""
+async def introspection(token: str | None) -> dict | None:
+    """The introspection record of a live ConstraAP PAT, or None. Cached; fail-closed.
+
+    The record carries ``org_id``, ``email`` and ``apps`` alongside ``active``.
+    """
     if not token or not config.TOKEN_INTROSPECT_URL:
-        return False
+        return None
     now = time.monotonic()
     hit = _cache.get(token)
     if hit and hit[0] > now:
         return hit[1]
-    active = await asyncio.to_thread(_introspect_sync, token)
+    record = await asyncio.to_thread(_introspect_sync, token)
     # Cache positives for the full TTL; negatives briefly so a revoke propagates fast
     # and a transient outage doesn't lock a good token out for long.
-    ttl = config.INTROSPECT_CACHE_TTL if active else min(config.INTROSPECT_CACHE_TTL, 15)
-    _cache[token] = (now + ttl, active)
+    ttl = config.INTROSPECT_CACHE_TTL if record else min(config.INTROSPECT_CACHE_TTL, 15)
+    _cache[token] = (now + ttl, record)
     _prune(now)
-    return active
+    return record
+
+
+async def token_is_active(token: str | None) -> bool:
+    """True if `token` is a live ConstraAP PAT. Cached; fail-closed."""
+    return (await introspection(token)) is not None
