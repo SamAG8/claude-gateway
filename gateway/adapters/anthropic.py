@@ -17,7 +17,7 @@ from ..canonical import (
     Stop,
     map_reason,
 )
-from ..content import image_block, pdf_to_text_block
+from ..content import image_block, pdf_block
 from ..errors import GatewayError, anthropic_error, key_is_valid
 from ..models import parse_model_spec
 from ..translate import join_texts, to_role
@@ -42,7 +42,7 @@ def _system_text(system) -> str | None:
     return None
 
 
-async def _to_messages(messages) -> list[CanonicalMessage]:
+async def _to_messages(messages, pdf_mode: str | None = None) -> list[CanonicalMessage]:
     out = []
     for m in messages:
         content = m.get("content")
@@ -63,11 +63,12 @@ async def _to_messages(messages) -> list[CanonicalMessage]:
                     src = b.get("source", {})
                     if src.get("type") == "base64" and src.get("media_type") == "application/pdf":
                         # Off the event loop. pdfplumber is synchronous and can run
-                        # for seconds on a large document; inline, it froze every
-                        # other in-flight stream on this gateway for that long —
-                        # before the first token of the request that asked for it.
+                        # for seconds on a large document (it counts the pages even
+                        # on the native path); inline, it froze every other
+                        # in-flight stream on this gateway for that long — before
+                        # the first token of the request that asked for it.
                         blocks.append(await asyncio.to_thread(
-                            pdf_to_text_block, src.get("data", "")))
+                            pdf_block, src.get("data", ""), pdf_mode))
                     else:
                         raise GatewayError(400, "unsupported document source")
                 # tool_use / tool_result etc. are accepted and ignored
@@ -75,7 +76,7 @@ async def _to_messages(messages) -> list[CanonicalMessage]:
     return out
 
 
-async def _build(body: dict) -> CanonicalRequest:
+async def _build(body: dict, pdf_mode: str | None = None) -> CanonicalRequest:
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
         raise GatewayError(400, "messages is required")
@@ -87,7 +88,7 @@ async def _build(body: dict) -> CanonicalRequest:
         effort_override=effort,
         surface="anthropic",
         system=_system_text(body.get("system")),
-        messages=await _to_messages(messages),
+        messages=await _to_messages(messages, pdf_mode),
         max_tokens=body.get("max_tokens") or 4096,
         stream=bool(body.get("stream", False)),
         temperature=body.get("temperature"),
@@ -140,7 +141,7 @@ async def messages(request: Request):
     except Exception:
         return anthropic_error(400, "invalid JSON body")
     try:
-        req = await _build(body)
+        req = await _build(body, (request.headers.get("x-pdf-mode") or "").strip().lower() or None)
     except GatewayError as e:
         return anthropic_error(e.status, e.message, e.err_type)
     # Per-user MCP token: an explicit x-mcp-token header wins; otherwise the PAT we

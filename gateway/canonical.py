@@ -91,9 +91,10 @@ class Result:
 def media_stats(req: "CanonicalRequest") -> tuple[int, int, int]:
     """Count native image/document blocks and approx decoded bytes across all turns.
 
-    Only blocks still present as native media reach an engine — the Anthropic
-    surface flattens PDFs to text upstream (pdf_to_text_block), so ``docs`` here
-    reflects native-vision PDFs (the expensive path), not text-extracted ones.
+    Only blocks still present as native media reach an engine — a PDF the
+    Anthropic surface flattened to text (x-pdf-mode: text, or past MAX_PDF_PAGES)
+    is not counted, so ``docs`` here reflects native-vision PDFs (the expensive
+    path), not text-extracted ones.
 
     Called at LOG time, never before an invocation: it walks every turn, and the
     answer is wanted for accounting, not for any decision. Doing it on the way in

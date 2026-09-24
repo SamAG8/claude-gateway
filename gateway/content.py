@@ -7,8 +7,10 @@ from . import config
 from .errors import GatewayError
 
 
-def _decode_b64(b64: str) -> bytes:
-    """Decode inbound base64 (standard or URL-safe), enforce MAX_FILE_SIZE, return raw bytes.
+def _decode_b64(b64: str, limit: int | None = None) -> bytes:
+    """Decode inbound base64 (standard or URL-safe), enforce a size limit, return raw bytes.
+
+    ``limit`` defaults to MAX_FILE_SIZE; PDFs pass MAX_PDF_SIZE.
 
     The official google-genai SDK encodes inline media with URL-safe base64
     (``-``/``_`` alphabet); the OpenAI/Anthropic SDKs send standard base64. We accept
@@ -25,9 +27,16 @@ def _decode_b64(b64: str) -> bytes:
         raise GatewayError(400, "invalid base64 data")
     if not raw:
         raise GatewayError(400, "empty base64 data")
-    if len(raw) > config.MAX_FILE_SIZE:
-        raise GatewayError(413, "file exceeds MAX_FILE_SIZE")
+    if limit is None:
+        if len(raw) > config.MAX_FILE_SIZE:
+            raise GatewayError(413, "file exceeds MAX_FILE_SIZE")
+    elif len(raw) > limit:
+        raise GatewayError(413, "PDF exceeds MAX_PDF_SIZE")
     return raw
+
+
+def _encode(raw: bytes) -> str:
+    return base64.b64encode(raw).decode("ascii")
 
 
 def normalize_b64(b64: str) -> str:
@@ -36,7 +45,7 @@ def normalize_b64(b64: str) -> str:
     Accepts standard or URL-safe base64 and always hands the CLI the standard form.
     The Claude CLI (Anthropic API) only accepts standard base64.
     """
-    return base64.b64encode(_decode_b64(b64)).decode("ascii")
+    return _encode(_decode_b64(b64))
 
 
 def image_block(media_type: str, data: str) -> dict:
@@ -55,12 +64,48 @@ def document_block(media_type: str, data: str) -> dict:
     """
     if not media_type:
         raise GatewayError(400, "document missing media_type")
-    return {"type": "document", "media_type": media_type, "data": normalize_b64(data)}
+    return {"type": "document", "media_type": media_type,
+            "data": _encode(_decode_b64(data, config.MAX_PDF_SIZE))}
+
+
+def pdf_page_count(raw: bytes) -> int | None:
+    """Pages in a PDF, or None when pdfplumber cannot open it.
+
+    None is not a refusal: Claude's own PDF reader is more forgiving than
+    pdfminer's, so an unparseable file still goes to it natively.
+    """
+    try:
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(raw)) as pdf:
+            return len(pdf.pages)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def pdf_block(data: str, mode: str | None = None) -> dict:
+    """The block an Anthropic-surface PDF becomes.
+
+    Native by default, so Claude sees the pages — a drawing's lines, a scan, a
+    table's layout — and not only whatever text pdfminer could pull out of them
+    (a drawing loses nearly everything; a scan loses everything and used to be
+    refused). ``mode == "text"`` (the ``x-pdf-mode: text`` header) asks for the
+    old flattening. A PDF longer than MAX_PDF_PAGES is flattened too, because the
+    Messages API refuses it natively and text is better than an error.
+
+    Synchronous and possibly slow (pdfplumber): callers run it off the loop.
+    """
+    if mode == "text":
+        return pdf_to_text_block(data)
+    raw = _decode_b64(data, config.MAX_PDF_SIZE)
+    pages = pdf_page_count(raw)
+    if pages is not None and pages > config.MAX_PDF_PAGES:
+        return pdf_to_text_block(data)
+    return {"type": "document", "media_type": "application/pdf", "data": _encode(raw)}
 
 
 def pdf_to_text_block(data: str) -> dict:
     """Extract PDF text via pdfplumber and inline it as a text block."""
-    raw = _decode_b64(data)
+    raw = _decode_b64(data, config.MAX_PDF_SIZE)
     try:
         import pdfplumber
         with pdfplumber.open(io.BytesIO(raw)) as pdf:
