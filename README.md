@@ -172,8 +172,8 @@ curl -s https://ap.constralabs.ai/llm-gateway/health
 # {"status":"ok","revision":"<short sha of main>","mcp":true,"pat_auth":true}
 ```
 
-How the host is wired, and how to run a gateway of your own on a plain VM with
-`scripts/deploy.sh`, is in **[docs/deployment.md](docs/deployment.md)**.
+How the host is wired (the runner, the stack's files, manual redeploys and
+rollback) is in **[docs/deployment.md](docs/deployment.md)**.
 
 ## Known limitations (honesty)
 
