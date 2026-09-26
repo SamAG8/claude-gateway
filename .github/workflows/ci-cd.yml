@@ -9,7 +9,8 @@ name: CI/CD
 # every stack on that host uses; this workflow adds nothing to it except the
 # REVISION stamp and a check that the build answering /health is the commit
 # that was pushed. Detail: docs/deployment.md here, and on the box
-# /var/www/OPERATIONS.md and /var/www/claude-gateway/docker/README.md.
+# /opt/constralabs/docs/OPERATIONS.md and
+# /opt/constralabs/docs/stacks/claude-gateway.md.
 on:
   push:
     branches: [main]
@@ -39,8 +40,7 @@ jobs:
     needs: test
     # A push to main, or a manual run from main. Never a pull_request: this
     # repo is public and the self-hosted runner must never execute a fork's
-    # code. (Re-enabled 2026-09-06. The previous target, a GCP VM, was deleted
-    # on 2026-08-27; the gateway has run on constralabs since 2026-08-14.)
+    # code.
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && github.ref == 'refs/heads/main'
@@ -65,9 +65,9 @@ jobs:
           SHA: ${{ github.sha }}
         run: REVISION="${SHA::7}" /opt/constralabs/bin/deploy-app claude-gateway "$SHA"
 
-      # Pinned to the host's PRIVATE address on purpose: Azure does not hairpin
-      # a VM's own public IP (the request just times out), and --resolve
-      # bypasses /etc/hosts, so the host-wide mapping would not help either.
+      # Pinned with --resolve to this host's own public address, so a pass
+      # proves THIS host served the build, whatever DNS says. The address comes
+      # from HOST_PUBLIC_IP in host-facts.env, else the default route's source.
       - name: Verify the build that answers is this commit
         env:
           SHA: ${{ github.sha }}
@@ -76,7 +76,7 @@ jobs:
           # literal here, and because a failed public probe reads as 'not
           # serving', it took good deploys down with it.
           . /opt/constralabs/etc/host-facts.env 2>/dev/null || true
-          ip="${HOST_IP:-$(ip -4 route get 1.1.1.1 | awk '{print $7; exit}')}"
+          ip="${HOST_PUBLIC_IP:-$(ip -4 route get 1.1.1.1 | awk '{print $7; exit}')}"
           [ -n "$ip" ] || { echo "::error::cannot determine this host's address"; exit 1; }
           body="$(curl -sS --max-time 10 --resolve "ap.constralabs.ai:443:$ip" \
                     https://ap.constralabs.ai/llm-gateway/health)"

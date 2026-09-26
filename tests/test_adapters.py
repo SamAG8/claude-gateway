@@ -404,7 +404,7 @@ async def test_health_names_the_build_and_what_it_can_attach(client, monkeypatch
     assert body["status"] == "ok"
     assert body["mcp"] is True
     assert body["pat_auth"] is True
-    # A short SHA, or an honest "unknown" for a tarball deploy with no git.
+    # A short SHA, or an honest "unknown" for a build with no REVISION and no git.
     assert isinstance(body["revision"], str) and body["revision"]
 
     # Facts about the deployment, never its secrets.
@@ -413,10 +413,10 @@ async def test_health_names_the_build_and_what_it_can_attach(client, monkeypatch
 
 
 async def test_health_reads_the_stamped_revision_first(client, monkeypatch, tmp_path):
-    """The deploy that matters has no git: ConstraAP's `--gateway` step tars
-    this directory and rsyncs it with `--exclude .git`, so a REVISION file
-    written at packaging time is the only thing that can answer on the serving
-    box. Git is the fallback, not the source."""
+    """The deploy that matters has no git: the production image is built with
+    `.git` excluded from its build context, so a REVISION file written at image
+    build time is the only thing that can answer on the serving box. Git is the
+    fallback, not the source."""
     import main
 
     main.deployed_revision.cache_clear()

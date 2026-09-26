@@ -81,9 +81,10 @@ def build_argv(req: CanonicalRequest) -> list[str]:
     only the one configured company-data server's tools are reachable and no
     built-in tool (Bash/Read/Write) can touch the gateway host.
 
-    The token rides in the inline --mcp-config JSON (visible in this process's argv
-    on the gateway host — acceptable on the dedicated single-tenant gateway VM;
-    switch to a 0600 temp-file config if that host ever becomes multi-tenant).
+    The token rides in the inline --mcp-config JSON (visible in this process's argv;
+    in production the container's private PID namespace hides it from every other
+    container on the shared host; switch to a 0600 temp-file config if the
+    container ever shares a PID namespace or a host with another trust domain).
     """
     argv = [
         "claude", "-p",

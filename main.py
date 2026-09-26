@@ -63,15 +63,12 @@ def deployed_revision() -> str:
     """The build this process is running, or "unknown".
 
     A REVISION file first, because THE DEPLOY THAT MATTERS HAS NO GIT. The
-    serving instance is packaged by ConstraAP's
-    `scripts/deploy-to-production.sh --gateway`, which tars this directory and
-    rsyncs it with `--exclude .git` — so a `git rev-parse` here would answer
-    "unknown" on the only box anybody cares about. The packaging step writes
-    the file; this reads it.
+    serving instance is a Docker image built with `.git` excluded from its
+    build context — so a `git rev-parse` here would answer "unknown" on the
+    only box anybody cares about. The image build writes the file from the
+    `REVISION` build-arg (the commit CI deployed); this reads it.
 
-    Git is the fallback, for a server bootstrapped by scripts/deploy.sh (which
-    does `git reset --hard`, making HEAD exactly what is serving) and for a
-    developer running uvicorn out of a checkout.
+    Git is the fallback, for a developer running uvicorn out of a checkout.
 
     Cached: a subprocess per health check would turn a liveness probe into a
     fork bomb under a load balancer.
