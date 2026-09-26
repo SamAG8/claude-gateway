@@ -45,6 +45,12 @@ TIMEOUT = int(os.getenv("TIMEOUT", "120"))
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(10 * 1024 * 1024)))  # 10 MB
+# A PDF sent natively is read page by page with Claude's vision, and the Messages API
+# takes one of up to 32 MB and 100 pages. Construction drawing sets routinely pass
+# 10 MB, so PDFs get their own ceiling rather than the image one. Past the page
+# limit a PDF is flattened to text instead of being refused (content.pdf_block).
+MAX_PDF_SIZE = int(os.getenv("MAX_PDF_SIZE", str(32 * 1024 * 1024)))  # 32 MB
+MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "100"))
 
 # Max bytes for a single stream-json line read from the `claude` CLI (the asyncio
 # StreamReader limit). The default 64 KiB is far too small: with --verbose the CLI

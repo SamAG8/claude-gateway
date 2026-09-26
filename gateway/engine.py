@@ -78,9 +78,9 @@ def select_engine(req: CanonicalRequest) -> None:
         return to_cli("mcp")
 
     kinds = _final_block_types(req)
-    # A native document block is read by Claude's own vision. The Anthropic surface
-    # already flattens PDFs to text upstream, so anything still native here is the
-    # Gemini surface's extraction path, which stays on Claude.
+    # A native document block is read by Claude's own vision, which no other engine
+    # has. Both surfaces send PDFs natively unless the Anthropic caller asked for
+    # text (x-pdf-mode: text) or the PDF was past the page limit.
     if "document" in kinds:
         return to_cli("document")
     if "image" in kinds and models.is_text_only(req.model):

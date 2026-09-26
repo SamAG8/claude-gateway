@@ -463,12 +463,12 @@ async def test_pdf_flatten_does_not_block_the_loop(client, mock_engine, monkeypa
 
     order: list[str] = []
 
-    def slow_flatten(data):
+    def slow_flatten(data, mode=None):
         time.sleep(0.4)  # blocking on purpose: this is what a real extraction does
         order.append("pdf")
         return {"type": "text", "text": "flattened"}
 
-    monkeypatch.setattr(anthropic_adapter, "pdf_to_text_block", slow_flatten)
+    monkeypatch.setattr(anthropic_adapter, "pdf_block", slow_flatten)
 
     async def with_pdf():
         return await client.post("/v1/messages", headers=AUTH_A, json={
@@ -488,6 +488,97 @@ async def test_pdf_flatten_does_not_block_the_loop(client, mock_engine, monkeypa
     slow, fast = await asyncio.gather(with_pdf(), plain())
     assert slow.status_code == 200 and fast.status_code == 200
     assert order == ["plain", "pdf"], "the plain turn waited for the PDF extraction"
+
+
+# ====================== Anthropic surface: PDFs are read, not flattened ======================
+
+def _pdf(pages: int, text: str = "DOOR SCHEDULE D101") -> str:
+    """A real, parseable PDF of ``pages`` pages, each carrying ``text``, as base64."""
+    import base64
+    n = pages
+    objs = ["<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [" + " ".join(f"{4 + 2 * i} 0 R" for i in range(n))
+            + f"] /Count {n} >>",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET"
+    for _ in range(n):
+        objs.append("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                    f"/Resources << /Font << /F1 3 0 R >> >> /Contents {len(objs) + 2} 0 R >>")
+        objs.append(f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream")
+    out, offsets = "%PDF-1.4\n", []
+    for i, o in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n{o}\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n"
+    out += "".join(f"{o:010d} 00000 n \n" for o in offsets)
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+    return base64.b64encode(out.encode("latin-1")).decode("ascii")
+
+
+def _pdf_message(data: str) -> dict:
+    return {"model": "sonnet", "max_tokens": 50, "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "how many doors?"},
+        {"type": "document", "source": {
+            "type": "base64", "media_type": "application/pdf", "data": data}}]}]}
+
+
+async def test_anthropic_pdf_reaches_the_engine_as_a_native_document(client, mock_engine):
+    """A drawing flattened to text loses its lines, and a scan loses everything —
+    it used to be refused outright. The model has to be given the pages."""
+    data = _pdf(2)
+    r = await client.post("/v1/messages", headers=AUTH_A, json=_pdf_message(data))
+    assert r.status_code == 200
+    blocks = mock_engine["req"].messages[-1].blocks
+    doc = [b for b in blocks if b["type"] == "document"]
+    assert doc and doc[0]["media_type"] == "application/pdf" and doc[0]["data"] == data
+    assert not any("Document content:" in (b.get("text") or "") for b in blocks)
+
+
+async def test_anthropic_pdf_pdfplumber_cannot_open_still_goes_natively(client, mock_engine):
+    """Claude's own reader is more forgiving than pdfminer's; an unparseable file
+    is its to judge, not a 400 from us."""
+    r = await client.post("/v1/messages", headers=AUTH_A, json=_pdf_message(PDF_B64))
+    assert r.status_code == 200
+    assert [b["type"] for b in mock_engine["req"].messages[-1].blocks] == ["text", "document"]
+
+
+async def test_anthropic_pdf_text_mode_header_keeps_the_old_flattening(client, mock_engine):
+    r = await client.post("/v1/messages", headers={**AUTH_A, "x-pdf-mode": "text"},
+                          json=_pdf_message(_pdf(1)))
+    assert r.status_code == 200
+    blocks = mock_engine["req"].messages[-1].blocks
+    assert not [b for b in blocks if b["type"] == "document"]
+    assert any("DOOR SCHEDULE D101" in (b.get("text") or "") for b in blocks)
+
+
+async def test_anthropic_pdf_past_the_page_limit_is_flattened_not_refused(
+        client, mock_engine, monkeypatch):
+    """The Messages API refuses a native PDF past its page limit. Text is a worse
+    answer than the pages and a better one than an error."""
+    from gateway import config
+    monkeypatch.setattr(config, "MAX_PDF_PAGES", 2)
+    r = await client.post("/v1/messages", headers=AUTH_A, json=_pdf_message(_pdf(3)))
+    assert r.status_code == 200
+    blocks = mock_engine["req"].messages[-1].blocks
+    assert not [b for b in blocks if b["type"] == "document"]
+    assert any("DOOR SCHEDULE D101" in (b.get("text") or "") for b in blocks)
+
+
+async def test_a_pdf_has_its_own_size_ceiling(client, mock_engine, monkeypatch):
+    """Drawing sets pass the image ceiling routinely; a PDF answers to MAX_PDF_SIZE."""
+    from gateway import config
+    import base64
+    data = _pdf(1)
+    size = len(base64.b64decode(data))
+    monkeypatch.setattr(config, "MAX_FILE_SIZE", size - 1)
+    monkeypatch.setattr(config, "MAX_PDF_SIZE", size)
+    r = await client.post("/v1/messages", headers=AUTH_A, json=_pdf_message(data))
+    assert r.status_code == 200
+    monkeypatch.setattr(config, "MAX_PDF_SIZE", size - 1)
+    r = await client.post("/v1/messages", headers=AUTH_A, json=_pdf_message(data))
+    assert r.status_code == 413
+    assert "MAX_PDF_SIZE" in r.json()["error"]["message"]
 
 
 # ====================== The wire shape is engine-independent ======================
